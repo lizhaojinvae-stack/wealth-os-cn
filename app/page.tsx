@@ -1,48 +1,1706 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-type Quote={code:string;market:number;name:string;price:number;changePct:number;change:number;volume:number;amount:number;turnover:number;pe:number;pb:number;high:number;low:number;open:number;prevClose:number;marketCap:number};
-type Bar={date:string;open:number;close:number;high:number;low:number;volume:number;changePct:number};
-const INDEX_CODES=["1.000001","0.399001","0.399006","1.000688","1.000300"];
-const DEFAULT_WATCH=["600519","300750","000858","601318"];
-const chapters=[
- ["基础","收益率与年化","总收益率 =（期末价值－本金＋现金分红）÷ 本金。例：10万元变为10.8万元，总收益率8%。年化收益率用于统一比较不同持有期。"],
- ["基础","复利与72法则","复利终值 = 本金×(1+收益率)^年数。年化8%时，72÷8≈9年翻倍；这是近似估算，不是承诺。"],
- ["基础","波动率与最大回撤","回撤衡量从历史高点下跌的幅度。净值从1.20跌到0.90，回撤=(0.90/1.20)-1=-25%。"],
- ["基础","市价、限价与成交","市价单优先成交但价格不确定；限价买单只会在限定价格或更低成交。流动性差时滑点会放大。"],
- ["进阶","PE、PB 与 PEG","PE=股价÷每股收益；PEG=PE÷预期增长率。PE 30倍、增速20%，PEG=1.5。增长预测失真时PEG也会失真。"],
- ["进阶","三张财务报表","利润不等于现金。净利润增长但经营现金流持续为负，需要检查应收账款、存货和收入确认。"],
- ["进阶","自由现金流与 DCF","自由现金流≈经营现金流－资本开支。DCF把未来现金流按要求回报率折现，结果对增速和折现率极敏感。"],
- ["进阶","均线、MACD 与 RSI","指标用于验证价格结构，不单独构成买卖理由。RSI高表示近期涨势强，不必然意味着立刻下跌。"],
- ["高阶","相关性与资产配置","相关性越低，组合分散效果通常越好。两项资产各50%，风险并非两者风险的简单平均。"],
- ["高阶","仓位与凯利公式","凯利比例 f=(bp-q)/b。胜率55%、盈亏比1:1时，f=10%；实务常用半凯利降低估计误差风险。"],
- ["高阶","利率与估值传导","无风险利率上升会提高折现率，压低远期现金流现值，因此久期更长的成长资产通常更敏感。"],
- ["高阶","行为金融与交易纪律","损失厌恶、锚定和确认偏误会破坏纪律。预先写下触发、失效条件，比盘中临时决定更可靠。"],
+type Quote = {
+  code: string;
+  market: number;
+  name: string;
+  price: number;
+  changePct: number;
+  change: number;
+  volume: number;
+  amount: number;
+  turnover: number;
+  pe: number;
+  pb: number;
+  high: number;
+  low: number;
+  open: number;
+  prevClose: number;
+  marketCap: number;
+  floatMarketCap: number;
+  mainNetInflow: number;
+};
+type Bar = {
+  date: string;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume: number;
+  changePct: number;
+};
+const INDEX_CODES = [
+  "1.000001",
+  "0.399001",
+  "0.399006",
+  "1.000688",
+  "1.000300",
 ];
-const money=(n:number)=>!Number.isFinite(n)?"-":n>=1e8?`${(n/1e8).toFixed(2)}亿`:n>=1e4?`${(n/1e4).toFixed(2)}万`:n.toLocaleString("zh-CN");
-const pct=(n:number)=>Number.isFinite(n)?`${n>=0?"+":""}${n.toFixed(2)}%`:"-";
+const DEFAULT_WATCH = ["600519", "300750", "000858", "601318"];
+const chapters = [
+  [
+    "基础",
+    "收益率与年化",
+    "总收益率 =（期末价值－本金＋现金分红）÷ 本金。例：10万元变为10.8万元，总收益率8%。年化收益率用于统一比较不同持有期。",
+  ],
+  [
+    "基础",
+    "复利与72法则",
+    "复利终值 = 本金×(1+收益率)^年数。年化8%时，72÷8≈9年翻倍；这是近似估算，不是承诺。",
+  ],
+  [
+    "基础",
+    "波动率与最大回撤",
+    "回撤衡量从历史高点下跌的幅度。净值从1.20跌到0.90，回撤=(0.90/1.20)-1=-25%。",
+  ],
+  [
+    "基础",
+    "市价、限价与成交",
+    "市价单优先成交但价格不确定；限价买单只会在限定价格或更低成交。流动性差时滑点会放大。",
+  ],
+  [
+    "进阶",
+    "PE、PB 与 PEG",
+    "PE=股价÷每股收益；PEG=PE÷预期增长率。PE 30倍、增速20%，PEG=1.5。增长预测失真时PEG也会失真。",
+  ],
+  [
+    "进阶",
+    "三张财务报表",
+    "利润不等于现金。净利润增长但经营现金流持续为负，需要检查应收账款、存货和收入确认。",
+  ],
+  [
+    "进阶",
+    "自由现金流与 DCF",
+    "自由现金流≈经营现金流－资本开支。DCF把未来现金流按要求回报率折现，结果对增速和折现率极敏感。",
+  ],
+  [
+    "进阶",
+    "均线、MACD 与 RSI",
+    "指标用于验证价格结构，不单独构成买卖理由。RSI高表示近期涨势强，不必然意味着立刻下跌。",
+  ],
+  [
+    "高阶",
+    "相关性与资产配置",
+    "相关性越低，组合分散效果通常越好。两项资产各50%，风险并非两者风险的简单平均。",
+  ],
+  [
+    "高阶",
+    "仓位与凯利公式",
+    "凯利比例 f=(bp-q)/b。胜率55%、盈亏比1:1时，f=10%；实务常用半凯利降低估计误差风险。",
+  ],
+  [
+    "高阶",
+    "利率与估值传导",
+    "无风险利率上升会提高折现率，压低远期现金流现值，因此久期更长的成长资产通常更敏感。",
+  ],
+  [
+    "高阶",
+    "行为金融与交易纪律",
+    "损失厌恶、锚定和确认偏误会破坏纪律。预先写下触发、失效条件，比盘中临时决定更可靠。",
+  ],
+];
+type CourseLesson = {
+  stage: string;
+  title: string;
+  summary: string;
+  theory: string[];
+  example: string;
+  pitfalls: string[];
+  formula?: string;
+  calculation?: string;
+  interactive?: "compound";
+};
+const courseLessons: CourseLesson[] = [
+  {stage:"零基础",title:"投资到底是什么",summary:"投资是把今天可支配的资源交给能够创造未来现金流的资产，并承担不确定性；它不是猜明天涨跌。",theory:["储蓄强调保管和流动性，投资强调承担风险换取潜在回报。","投机关注价格变化，投资关注资产未来能创造多少价值；两者可能同时存在，但决策依据不同。","任何回报都来自某种风险暴露：经营、信用、利率、流动性或市场情绪。"],example:"买入一家持续盈利企业的股份，是分享企业未来利润；仅因热门消息追涨，则更接近价格投机。",pitfalls:["把投资等同于稳赚","只看收益、不问风险来自哪里","使用短期要花的钱投资高波动资产"]},
+  {stage:"零基础",title:"先建立个人财务地基",summary:"投资之前先处理现金流、应急金、保险与高息负债，否则市场波动会迫使你在最差时点卖出。",theory:["应急资金解决意外支出，投资资金解决长期目标，两者用途不同。","高息债务的确定性成本通常高于投资的非确定性收益。","风险承受能力取决于收入稳定性、资金期限和家庭责任，不等于心理胆量。"],example:"未来半年要付首付的钱不适合进入股票市场；十年后退休所需资金才有更长时间消化波动。",pitfalls:["满仓后才考虑应急金","把信用卡分期成本忽略掉","照搬别人的风险等级"]},
+  {stage:"零基础",title:"资产、负债与净资产",summary:"资产能带来未来经济利益，负债意味着未来需要偿付；个人净资产是资产减负债。",theory:["现金、股票、债券、房产是资产，但流动性和风险完全不同。","消费品可能有使用价值，却不一定具有投资回报。","净资产增长来自储蓄、资产增值和负债下降。"],example:"一套自住房既提供居住服务，也有价格波动；按揭贷款则是必须持续偿付的负债。",pitfalls:["把所有昂贵物品当投资","忽略负债利率","只看资产总额不看净资产"]},
+  {stage:"零基础",title:"风险与收益的真实关系",summary:"高风险不保证高收益，只意味着结果范围更宽；合理目标是获得与承担风险相匹配的预期回报。",theory:["波动是风险的一部分，永久性亏损、信用违约和流动性枯竭更重要。","预期收益是多种结果的概率加权，不是承诺。","期限越短，股票结果越容易受情绪和事件支配。"],example:"一只股票可能上涨50%，也可能下跌60%；“潜在涨幅大”并不能自动说明值得买。",pitfalls:["把波动大理解成机会一定大","用历史最高收益代表未来","忽略极端亏损后的回本难度"]},
+  {stage:"零基础",title:"收益率、复利与通胀",summary:"名义金额增长不等于购买力增长；长期投资需要同时理解收益率、复利和通胀。",theory:["单期收益率用于衡量一段时间内资产价值变化。","复利是收益继续参与下一期增长，时间越长影响越明显。","实际收益约等于名义收益减通胀，真正反映购买力。"],example:"10万元年化8%，10年理论终值约21.59万元；若同期通胀3%，实际购买力增长明显低于账面增长。",pitfalls:["把短期高收益直接年化","忽略税费和交易成本","把复利演算当收益承诺"],formula:"终值 = 本金 × (1 + 年收益率)^年数；实际收益率 ≈ 名义收益率 − 通胀率",calculation:"100,000 × (1 + 8%)^10 ≈ 215,892元。",interactive:"compound"},
+  {stage:"基础",title:"股票、债券、基金与现金",summary:"不同资产代表不同法律关系和收益来源，选择前先理解自己究竟买到了什么。",theory:["股票代表剩余所有权，收益来自企业增长、分红与估值变化。","债券代表债权，核心是按约定收息和还本，同时承担信用与利率风险。","基金是资产组合工具，不是独立资产类别；风险由底层持仓决定。","现金类资产波动低、流动性高，但长期有通胀侵蚀。"],example:"股票基金和债券基金都叫基金，但前者主要承受股价波动，后者主要承受利率和信用变化。",pitfalls:["看到基金就认为低风险","只比较收益率不比较底层资产","把现金无波动误认为无风险"]},
+  {stage:"基础",title:"指数与ETF",summary:"指数是一套选样和加权规则，ETF是跟踪指数或资产的交易工具。",theory:["宽基指数反映较广市场，行业指数集中暴露于某一产业。","市值加权会让大公司占比更高，等权指数则更强调中小成分。","跟踪误差、费率、流动性和指数规则共同决定ETF体验。"],example:"沪深300ETF并不是买入一个数字，而是通过基金间接持有一篮子大型上市公司。",pitfalls:["只看指数名称不看编制规则","把行业ETF当分散投资","忽略折溢价和成交活跃度"]},
+  {stage:"基础",title:"A股市场与板块",summary:"主板、创业板、科创板和北交所服务的企业类型、交易门槛与涨跌幅制度不同。",theory:["沪深主板以成熟企业为主，创业板和科创板更强调成长与创新。","不同板块的准入、涨跌幅、盘后交易和投资者适当性存在差异。","股票代码只是识别线索，最终应以交易所证券信息为准。"],example:"688开头通常为科创板，300/301开头通常为创业板，920等新代码体系用于北交所。",pitfalls:["忽略板块交易权限","认为同一行业股票风险相同","仅凭代码判断公司质量"]},
+  {stage:"基础",title:"交易时间、竞价与成交",summary:"价格由买卖订单在规则下撮合形成；开盘价、收盘价和盘中价格的形成方式并不完全相同。",theory:["集合竞价用一段时间内订单集中确定成交价，连续竞价按价格优先、时间优先撮合。","限价单控制最差成交价格，市价类指令强调成交速度。","停牌、涨跌停和流动性不足都会影响订单能否成交。"],example:"你看到最新价10元，不代表下单100万元都能以10元成交，盘口深度决定实际成交均价。",pitfalls:["把最新价当可无限成交价格","不理解撤单和未成交","临近涨跌停使用激进委托"]},
+  {stage:"基础",title:"K线、成交量与复权",summary:"K线压缩展示开高低收，成交量反映交易活跃度；复权用于让历史价格更可比。",theory:["一根K线描述某周期的开盘、最高、最低、收盘，不解释背后原因。","成交量要结合价格位置和市场环境理解，放量本身不等于利好。","前复权适合观察连续走势，除权价适合核对当时真实成交价格。"],example:"公司10送10后股价机械减半并不等于持有人财富瞬间减半，复权曲线会处理这种断点。",pitfalls:["根据单根K线下结论","把任何放量上涨都当突破","混用复权与不复权价格"]},
+  {stage:"基础",title:"盘口、换手率与资金流",summary:"盘口和资金流指标是交易行为的加工视图，不等于能够识别每个参与者的真实意图。",theory:["五档盘口只展示有限价位的挂单，挂单可以撤销。","换手率衡量流通股份被交易的活跃程度，需要与历史和同业比较。","主力净流入通常按大单口径估算，不是交易所披露的真实账户身份。"],example:"主力净流入为正但股价下跌并不矛盾，统计口径、成交位置和其他订单都可能造成差异。",pitfalls:["把挂单当必然成交","把资金流当内幕线索","跨平台比较不同口径数值"]},
+  {stage:"进阶",title:"读懂商业模式",summary:"分析公司先问它为谁解决什么问题、如何收费、成本由什么驱动、优势能否持续。",theory:["收入增长要区分销量、价格、并购和会计口径变化。","毛利高不一定生意好，还要看获客成本、资本开支和周转效率。","护城河可能来自品牌、网络效应、成本、转换成本、专利或监管许可。"],example:"同为软件公司，订阅制与项目制的收入可预测性、回款周期和人力成本结构可能完全不同。",pitfalls:["用行业热门代替公司研究","只听管理层叙事不核对报表","把短期高增长当永久趋势"]},
+  {stage:"进阶",title:"利润表：收入到净利润",summary:"利润表解释一段时期赚了多少，但利润质量需要结合现金流和会计政策判断。",theory:["营业收入减营业成本得到毛利润，再扣费用、税费等形成净利润。","毛利率反映产品与成本结构，净利率还受费用、资产减值和非经常项目影响。","同比改善可能来自低基数，不能脱离多个周期。"],example:"公司净利润增长50%，若主要来自出售资产而非主营业务，持续性通常较弱。",pitfalls:["只看净利润不看来源","混淆收入与回款","用单季度代表完整周期"]},
+  {stage:"进阶",title:"资产负债表：家底与压力",summary:"资产负债表展示某一时点公司拥有的资源、承担的义务以及股东权益。",theory:["会计恒等式是资产＝负债＋所有者权益。","应收、存货和商誉的质量可能比账面金额更重要。","债务期限结构决定短期偿债压力，现金多也要看是否受限。"],example:"企业账面利润不错，但应收账款持续快于收入增长，可能意味着回款质量恶化。",pitfalls:["把资产多等同于价值高","忽略表外义务和担保","只看资产负债率一个指标"]},
+  {stage:"进阶",title:"现金流量表：钱去了哪里",summary:"现金流量表把现金变化分成经营、投资和融资活动，帮助核对利润是否真正转化为现金。",theory:["经营现金流反映主营经营收付，长期应与利润相互印证。","投资现金流为负可能来自扩张，也可能来自低效投入。","融资现金流反映借款、还债、增发、回购和分红。"],example:"净利润连续增长但经营现金流长期为负，需要检查应收、存货、预付款或收入确认。",pitfalls:["经营现金流为负就一律判坏","忽略企业所处发展阶段","不看多年趋势"]},
+  {stage:"进阶",title:"ROE、ROA与杜邦分析",summary:"回报率衡量公司使用资本创造利润的效率，但高ROE可能来自优秀经营，也可能来自高杠杆。",theory:["ROE关注股东权益回报，ROA关注全部资产效率。","杜邦分析把ROE拆为净利率、资产周转率和权益乘数。","回购、减值和周期顶部都可能扭曲单期数值。"],example:"两家公司ROE同为20%，一家靠高利润率，另一家靠高负债，风险结构完全不同。",pitfalls:["ROE越高越好","忽略负权益或一次性利润","跨行业直接比较"],formula:"ROE ≈ 净利率 × 总资产周转率 × 权益乘数",calculation:"净利率10% × 周转率1.2 × 权益乘数1.5 ≈ ROE 18%。"},
+  {stage:"进阶",title:"估值不是判断贵贱的标签",summary:"估值是在增长、现金流、风险和资金成本假设下，对未来价值进行比较，而不是只看一个倍数。",theory:["价格是市场成交结果，价值是基于假设的估计，两者都可能变化。","相对估值比较同业和历史，绝对估值折现未来现金流。","低估值可能包含衰退风险，高估值可能反映增长预期。"],example:"一家PE 10倍的周期公司未必比PE 30倍的稳定公司便宜，因为利润所处周期和持续性不同。",pitfalls:["PE低就买、PE高就卖","忽略负利润时PE失效","估值脱离增长质量"]},
+  {stage:"进阶",title:"PE、PB、PS与股息率",summary:"不同估值指标适用于不同盈利阶段和商业模式，必须理解分子分母及失效条件。",theory:["PE适合盈利相对稳定企业；PB常用于重资产和金融企业；PS可辅助观察尚未盈利但有收入的企业。","TTM使用最近四个季度，静态和预测口径不同。","股息率衡量现金分红相对价格，但高股息可能不可持续。"],example:"股价20元、每股收益1元，PE为20倍；每股净资产5元，PB为4倍。",pitfalls:["混用TTM和预测PE","忽略周期利润高点","把高股息当无风险"],formula:"PE＝股价÷每股收益；PB＝股价÷每股净资产；股息率＝每股股息÷股价",calculation:"股价20元、EPS 1元，则PE=20倍；每股股息0.6元，则股息率=3%。"},
+  {stage:"进阶",title:"DCF与安全边际",summary:"现金流折现把未来可分配现金换算为今天的价值；结果高度依赖假设，因此应使用区间而非单点。",theory:["现金流越晚、风险越高，今天的价值越低。","折现率体现时间价值和风险补偿。","安全边际用于应对预测错误，而不是保证不会亏损。"],example:"同样未来收到100元，若折现率更高，其现值更低；成长股对远期假设尤其敏感。",pitfalls:["用精确小数掩盖不确定性","终值占比过高","把模型输出当事实"],formula:"现值＝未来现金流÷(1＋折现率)^期数",calculation:"3年后100元、折现率8%，现值约为100÷1.08³＝79.38元。"},
+  {stage:"进阶",title:"债券价格、收益率与久期",summary:"债券价格与市场利率通常反向变化；期限越长、票息越低，对利率越敏感。",theory:["票息是合约现金流，收益率是当前价格隐含的回报水平。","发行人信用恶化会提高要求收益率并压低价格。","久期可近似衡量利率变化对债券价格的影响。"],example:"市场新债利率升至4%时，原有票息2%的债券吸引力下降，价格通常需要下调。",pitfalls:["债券一定保本","只看票息不看买入价格","忽略信用和流动性风险"],formula:"价格变动约 ≈ −修正久期 × 利率变动",calculation:"修正久期5，利率上升0.5个百分点，价格约下降2.5%，仅为小幅变化近似。"},
+  {stage:"高阶",title:"资产配置与相关性",summary:"组合风险不仅取决于每项资产多危险，还取决于它们是否在同一时间以相同方向波动。",theory:["分散化的核心是配置不同风险来源，而不是简单增加持仓数量。","相关性会随危机环境上升，历史关系不是常数。","资产配置应服务于资金目标、期限和最大可承受损失。"],example:"持有十只同一行业股票看似分散，实质仍集中暴露于同一政策和景气周期。",pitfalls:["股票数量多就是分散","根据短期收益追逐配置","忽略再平衡纪律"]},
+  {stage:"高阶",title:"仓位、回撤与风险预算",summary:"仓位决定判断错误时会损失多少；先定义可承受损失，再反推投入规模。",theory:["最大回撤描述资产从阶段高点到低点的跌幅。","风险预算把总可承受风险分配给不同策略或资产。","相关持仓应合并看待，不能逐只独立计算后误以为风险可控。"],example:"账户10万元，单笔最多承受1000元损失，买入价20元、失效位18元，则理论上限约500股。",pitfalls:["满仓后再找止损位","用摊低成本代替风控","忽略跳空导致实际损失更大"],formula:"仓位股数≈单笔可承受损失÷(买入价−失效价)",calculation:"1,000÷(20−18)=500股；还需考虑手续费、滑点和跳空。"},
+  {stage:"高阶",title:"再平衡与投资纪律",summary:"再平衡是把偏离目标的组合恢复到预定风险结构，不是预测短期涨跌。",theory:["可按时间、偏离阈值或二者结合触发。","卖出上涨较多资产、补充相对较少资产，本质是纪律化控制集中度。","税费、流动性和交易成本决定再平衡频率。"],example:"目标股债60/40，股票上涨后变成72/28，可逐步恢复目标，而不是因为上涨就无限提高股票比例。",pitfalls:["过度频繁调整","把目标比例当永久不变","不考虑新增现金流"]},
+  {stage:"高阶",title:"有效市场与行为偏差",summary:"市场并非永远正确，但竞争使明显错误难以长期免费存在；投资者自身偏差往往比模型误差更危险。",theory:["确认偏误让人只寻找支持原观点的信息。","损失厌恶让人过早止盈、长期拖延止损。","锚定使买入价、历史高点等无关数字影响判断。","羊群效应在趋势中自我强化，也可能在预期反转时迅速瓦解。"],example:"股价跌破买入价后只搜索利好新闻，是确认偏误；“回到成本就卖”则是被成本价锚定。",pitfalls:["认为只有别人会情绪化","用更多信息代替决策规则","把运气当能力"]},
+  {stage:"高阶",title:"宏观变量如何传导到资产",summary:"利率、通胀、汇率、财政与信用周期通过折现率、需求、成本和风险偏好影响资产。",theory:["利率上升通常提高折现率，对远期现金流占比高的资产压力更大。","通胀对企业的影响取决于定价权、成本结构和资本强度。","汇率变化影响出口收入、进口成本、外币负债和资金流。","宏观判断正确也不等于交易时点正确，市场可能提前定价。"],example:"原材料涨价对有定价权企业可能可转嫁，对价格受管制企业则可能压缩利润。",pitfalls:["一个宏观变量解释所有行情","忽略市场预期差","宏观观点直接等于个股结论"]},
+  {stage:"高阶",title:"衍生品、杠杆与尾部风险",summary:"期货和期权可用于套期保值，也能放大风险；杠杆会让小幅不利变化转化为大额亏损甚至强制平仓。",theory:["期货是双向合约并采用保证金制度。","期权买方拥有权利，卖方承担履约义务；价格受标的、时间、波动率和利率影响。","杠杆改变损益速度，不创造投资优势。"],example:"10倍杠杆下，标的不利变动5%可能造成约50%的权益损失，实际还受保证金和强平规则影响。",pitfalls:["只看最大收益图","忽略时间价值损耗","把卖期权小额稳定收益当低风险"]},
+  {stage:"高阶",title:"建立自己的研究与复盘系统",summary:"稳定流程比临场感觉更可靠：先定义问题、记录证据和反证，再形成可检验的决策与复盘。",theory:["投资备忘录应记录买入逻辑、关键变量、估值区间、风险和失效条件。","区分过程质量与短期结果：好过程也可能暂时亏损，坏过程也可能偶然赚钱。","复盘应检查信息、推理、执行和仓位，而不只是看盈亏。"],example:"买入前写下“若核心产品价格连续两个季度下降则重新评估”，比下跌后临时解释更有约束力。",pitfalls:["只复盘亏损交易","不断修改原始理由","用结果证明当时决策正确"]}
+];
+const money = (n: number) =>
+  !Number.isFinite(n)
+    ? "-"
+    : n >= 1e8
+      ? `${(n / 1e8).toFixed(2)}亿`
+      : n >= 1e4
+        ? `${(n / 1e4).toFixed(2)}万`
+        : n.toLocaleString("zh-CN");
+const pct = (n: number) =>
+  Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}%` : "-";
 
-export default function Home(){
- const [tab,setTab]=useState("market"),[quotes,setQuotes]=useState<Quote[]>([]),[bars,setBars]=useState<Bar[]>([]),[selected,setSelected]=useState("600519"),[loading,setLoading]=useState(true),[error,setError]=useState(""),[stamp,setStamp]=useState(""),[watch,setWatch]=useState<string[]>(DEFAULT_WATCH),[newCode,setNewCode]=useState(""),[holdings,setHoldings]=useState<{code:string;shares:number;cost:number}[]>([]),[learnQ,setLearnQ]=useState(""),[lesson,setLesson]=useState(0),[principal,setPrincipal]=useState(100000),[rate,setRate]=useState(8),[years,setYears]=useState(10);
- useEffect(()=>{try{setWatch(JSON.parse(localStorage.getItem("wealth-watch")||"null")||DEFAULT_WATCH);setHoldings(JSON.parse(localStorage.getItem("wealth-holdings")||"[]"))}catch{}},[]);
- const codes=useMemo(()=>Array.from(new Set([...INDEX_CODES,...watch,...holdings.map(h=>h.code),selected])),[watch,holdings,selected]);
- const refresh=async()=>{setLoading(true);setError("");try{const r=await fetch(`/api/market?codes=${codes.join(",")}`,{cache:"no-store"}),j=await r.json();if(!j.ok)throw new Error(j.error);setQuotes(j.quotes);setStamp(new Date(j.fetchedAt).toLocaleString("zh-CN"))}catch(e){setError(e instanceof Error?e.message:"行情请求失败")}finally{setLoading(false)}};
- useEffect(()=>{refresh();const t=setInterval(refresh,30000);return()=>clearInterval(t)},[codes.join(",")]);
- useEffect(()=>{fetch(`/api/market?type=kline&code=${selected}`).then(r=>r.json()).then(j=>setBars(j.bars||[])).catch(()=>setBars([]))},[selected]);
- const map=useMemo(()=>{const m:Record<string,Quote>={};quotes.forEach(q=>{m[`${q.market}.${q.code}`]=q;if(!INDEX_CODES.includes(`${q.market}.${q.code}`))m[q.code]=q});return m},[quotes]); const q=map[selected];
- const closes=bars.map(b=>b.close),ma=(n:number)=>closes.length>=n?closes.slice(-n).reduce((a,b)=>a+b,0)/n:NaN;
- const signal=!q?"数据不足":q.price>ma(20)&&ma(20)>ma(60)?"趋势偏强，等待回踩确认":q.price<ma(20)&&ma(20)<ma(60)?"趋势偏弱，优先控制风险":"区间震荡，避免追涨杀跌";
- const holdingValue=holdings.reduce((s,h)=>s+(map[h.code]?.price||0)*h.shares,0),holdingCost=holdings.reduce((s,h)=>s+h.cost*h.shares,0);
- const saveWatch=(w:string[])=>{setWatch(w);localStorage.setItem("wealth-watch",JSON.stringify(w))}; const saveHold=(h:typeof holdings)=>{setHoldings(h);localStorage.setItem("wealth-holdings",JSON.stringify(h))};
- const addCode=()=>{const c=newCode.replace(/\D/g,"").slice(0,6);if(c.length===6&&!watch.includes(c))saveWatch([...watch,c]);setNewCode("")};
- const path=bars.slice(-60).map((b,i,a)=>{const vals=a.map(x=>x.close),mn=Math.min(...vals),mx=Math.max(...vals);return `${(i/(a.length-1||1))*100},${85-((b.close-mn)/(mx-mn||1))*70}`}).join(" ");
- const filtered=chapters.map((x,i)=>({x,i})).filter(({x})=>x.join("").includes(learnQ)); const total=principal*Math.pow(1+rate/100,years);
- return <main><header><div className="brand"><span>↗</span><b>WEALTH OS</b><small>真实数据投资工作台</small></div><nav>{[["market","市场"],["watch","自选"],["portfolio","持仓"],["strategy","策略"],["learn","学习"]].map(x=><button key={x[0]} className={tab===x[0]?"active":""} onClick={()=>setTab(x[0])}>{x[1]}</button>)}</nav><div className="head-actions"><span className="status">{error?`数据异常：${error}`:`真实行情 · ${stamp||"连接中"}`}</span><button onClick={refresh}>{loading?"同步中":"↻ 刷新"}</button></div></header>
- <section className="page realapp">{tab!=="learn"&&<div className="sourcebar"><b>数据口径</b> 东方财富 push2 / push2his · 行情约30秒刷新 · K线前复权 · <span>最后成功 {stamp||"-"}</span></div>}
- {tab==="market"&&<><div className="section-title"><span><small>REAL MARKET</small><h2>市场总览</h2></span></div><div className="index-grid">{INDEX_CODES.map(c=>{const x=map[c];return <article className="index-card" key={c}><div><span>{x?.name||c}</span><b className={(x?.changePct||0)>=0?"up":"down"}>{x?pct(x.changePct):"-"}</b></div><strong>{x?.price??"-"}</strong><p>高 {x?.high??"-"}　低 {x?.low??"-"}</p><p>成交额 {x?money(x.amount):"-"}</p></article>})}</div><div className="lower-grid"><article className="panel market-focus"><div className="section-head"><div><small>{q?.name||selected} · {selected}</small><h2>{q?.price??"-"} <em className={(q?.changePct||0)>=0?"up":"down"}>{q?pct(q.changePct):"-"}</em></h2></div><select value={selected} onChange={e=>setSelected(e.target.value)}>{watch.map(c=><option key={c} value={c}>{map[c]?.name||c}</option>)}</select></div><svg viewBox="0 0 100 90" preserveAspectRatio="none"><polyline points={path} fill="none" stroke="#049b93" strokeWidth="1.2"/></svg><div className="quote-detail"><span>开盘 <b>{q?.open??"-"}</b></span><span>最高 <b>{q?.high??"-"}</b></span><span>最低 <b>{q?.low??"-"}</b></span><span>换手 <b>{q?.turnover??"-"}%</b></span><span>PE <b>{q?.pe??"-"}</b></span><span>PB <b>{q?.pb??"-"}</b></span></div></article><article className="panel decision-live"><small>系统观察</small><h2>{signal}</h2><p>MA20 {Number.isFinite(ma(20))?ma(20).toFixed(2):"-"} · MA60 {Number.isFinite(ma(60))?ma(60).toFixed(2):"-"}</p><p>基于180个交易日前复权日线计算；只描述当前结构，不预测收益。</p></article></div></>}
- {tab==="watch"&&<><div className="toolrow"><div><h1>自选股</h1><p>代码保存在当前设备，行情来自真实接口。</p></div><div><input value={newCode} onChange={e=>setNewCode(e.target.value)} placeholder="输入6位股票代码"/><button onClick={addCode}>添加</button></div></div><div className="stock-table"><div className="tr th"><span>名称 / 代码</span><span>最新</span><span>涨跌幅</span><span>成交额</span><span>PE / PB</span><span>操作</span></div>{watch.map(c=>{const x=map[c];return <div className="tr" key={c} onClick={()=>{setSelected(c);setTab("market")}}><span><b>{x?.name||"加载中"}</b><small>{c}</small></span><span>{x?.price??"-"}</span><span className={(x?.changePct||0)>=0?"up":"down"}>{x?pct(x.changePct):"-"}</span><span>{x?money(x.amount):"-"}</span><span>{x?.pe??"-"} / {x?.pb??"-"}</span><button onClick={e=>{e.stopPropagation();saveWatch(watch.filter(i=>i!==c))}}>移除</button></div>})}</div></>}
- {tab==="portfolio"&&<><div className="toolrow"><div><h1>我的持仓</h1><p>仅保存在当前浏览器，不上传个人资产数据。</p></div><button onClick={()=>saveHold([...holdings,{code:"600519",shares:100,cost:1400}])}>＋ 添加一笔</button></div><div className="portfolio-summary"><div><small>持仓市值</small><b>¥ {money(holdingValue)}</b></div><div><small>持仓成本</small><b>¥ {money(holdingCost)}</b></div><div><small>浮动盈亏</small><b className={holdingValue-holdingCost>=0?"up":"down"}>¥ {money(holdingValue-holdingCost)}</b></div></div>{holdings.length===0?<div className="empty">暂无持仓，点击“添加一笔”开始记录。</div>:<div className="stock-table">{holdings.map((h,i)=>{const x=map[h.code];return <div className="tr holding" key={i}><input value={h.code} onChange={e=>{const z=[...holdings];z[i]={...h,code:e.target.value.replace(/\D/g,"").slice(0,6)};saveHold(z)}}/><input type="number" value={h.shares} onChange={e=>{const z=[...holdings];z[i]={...h,shares:+e.target.value};saveHold(z)}}/><input type="number" value={h.cost} onChange={e=>{const z=[...holdings];z[i]={...h,cost:+e.target.value};saveHold(z)}}/><span>{x?.name||"同步中"} · 市值 ¥{money((x?.price||0)*h.shares)}</span><button onClick={()=>saveHold(holdings.filter((_,j)=>i!==j))}>删除</button></div>})}</div>}</>}
- {tab==="strategy"&&<><div className="strategy-title"><div><span className="eyebrow">RULE-BASED ENGINE</span><h1>纪律策略室</h1><p>所有指标都由真实前复权日线计算，不使用固定演示结论。</p></div><select value={selected} onChange={e=>setSelected(e.target.value)}>{watch.map(c=><option key={c} value={c}>{map[c]?.name||c}</option>)}</select></div><article className="decision panel"><small>当前结构判断</small><h2>{signal}</h2><p>{q?.name}（{selected}）最新价 {q?.price??"-"}；20日均线 {Number.isFinite(ma(20))?ma(20).toFixed(2):"-"}，60日均线 {Number.isFinite(ma(60))?ma(60).toFixed(2):"-"}。均线只用于描述趋势，不单独构成交易信号。</p><div className="decision-metrics"><div><b>{q?pct(q.changePct):"-"}</b><span>当日涨跌</span></div><div><b>{q?.pe??"-"}</b><span>PE(TTM)</span></div><div><b>{q?.pb??"-"}</b><span>市净率</span></div><div><b>{bars.length}</b><span>有效日线样本</span></div></div></article></>}
- {tab==="learn"&&<><div className="learn-hero"><div><span className="eyebrow">WEALTH ACADEMY</span><h1>金融知识，从基础到高阶</h1><p>每个知识点包含理论、公式、数字案例和风险边界。</p></div><div className="progress-card"><div className="ring"><b>{Math.round(((lesson+1)/chapters.length)*100)}%</b></div><div><small>当前章节</small><h3>{chapters[lesson][1]}</h3><p>{lesson+1} / {chapters.length}</p></div></div></div><div className="academy"><aside><input value={learnQ} onChange={e=>setLearnQ(e.target.value)} placeholder="搜索术语或知识点"/>{filtered.map(({x,i})=><button className={lesson===i?"active":""} key={i} onClick={()=>setLesson(i)}><small>{x[0]} · {String(i+1).padStart(2,"0")}</small><b>{x[1]}</b></button>)}</aside><article className="lesson panel"><span className="eyebrow">{chapters[lesson][0]}篇 · 知识点 {lesson+1}</span><h1>{chapters[lesson][1]}</h1><p className="lead">{chapters[lesson][2]}</p><div className="tip"><b>学习原则：</b>先理解适用条件，再使用公式；历史数据与计算结果都不等于未来收益。</div><hr/><h3>复利互动案例</h3><label>本金 <input type="number" value={principal} onChange={e=>setPrincipal(+e.target.value)}/></label><label>年化假设 {rate}% <input type="range" min="0" max="20" value={rate} onChange={e=>setRate(+e.target.value)}/></label><label>年限 {years}年 <input type="range" min="1" max="40" value={years} onChange={e=>setYears(+e.target.value)}/></label><div className="result"><small>教学演算终值</small><strong>¥ {Math.round(total).toLocaleString("zh-CN")}</strong><span>不含税费，不代表收益承诺</span></div></article></div></>}
- </section><footer><span>WEALTH OS · 真实数据、明确口径、失败不造数</span><span>研究与学习辅助，不构成投资建议</span></footer></main>
+function PriceChart({ bars, mode }: { bars: Bar[]; mode: string }) {
+  const windowSize = Math.min(70, bars.length),
+    maxOffset = Math.max(0, bars.length - windowSize);
+  const [offset, setOffset] = useState(0),
+    [cursor, setCursor] = useState<number | null>(null),
+    [cursorPrice, setCursorPrice] = useState<number | null>(null),
+    [locked, setLocked] = useState(false),
+    [dragging, setDragging] = useState(false);
+  const drag = useRef({ x: 0, offset: 0, moved: false });
+  useEffect(() => {
+    setOffset(0);
+    setCursor(null);
+    setLocked(false);
+  }, [bars]);
+  const end = bars.length - offset,
+    start = Math.max(0, end - windowSize),
+    data = bars.slice(start, end);
+  if (!data.length)
+    return (
+      <div className="chart-empty">
+        <b>K线数据暂不可用</b>
+        <span>未取得有效行情样本，系统不会生成趋势判断。</span>
+      </div>
+    );
+  const lo = Math.min(...data.map((x) => x.low)),
+    hi = Math.max(...data.map((x) => x.high)),
+    pad = (hi - lo) * 0.04,
+    low = lo - pad,
+    high = hi + pad,
+    y = (v: number) => 6 + ((high - v) / (high - low || 1)) * 74,
+    w = 100 / data.length,
+    active = cursor === null ? null : data[cursor],
+    cx = cursor === null ? 0 : cursor * w + w / 2,
+    cy = cursorPrice === null ? 0 : y(cursorPrice);
+  const locate = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (locked && !dragging) return;
+    const r = e.currentTarget.getBoundingClientRect(),
+      chartW = Math.max(1, r.width - 58),
+      chartH = Math.min(360, r.height - 28),
+      px = Math.max(0, Math.min(chartW, e.clientX - r.left)),
+      py = Math.max(0, Math.min(chartH, e.clientY - r.top));
+    setCursor(
+      Math.min(data.length - 1, Math.floor((px / chartW) * data.length)),
+    );
+    setCursorPrice(
+      high -
+        ((Math.max(6, Math.min(80, (py / chartH) * 88)) - 6) / 74) *
+          (high - low),
+    );
+  };
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragging) {
+      const r = e.currentTarget.getBoundingClientRect(),
+        step = Math.round(
+          (e.clientX - drag.current.x) /
+            (Math.max(1, r.width - 58) / windowSize),
+        );
+      if (Math.abs(e.clientX - drag.current.x) > 4) drag.current.moved = true;
+      setOffset(Math.max(0, Math.min(maxOffset, drag.current.offset + step)));
+    }
+    locate(e);
+  };
+  const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { x: e.clientX, offset, moved: false };
+    setDragging(true);
+  };
+  const onUp = () => {
+    setDragging(false);
+    if (!drag.current.moved && cursor !== null) setLocked((v) => !v);
+  };
+  return (
+    <div
+      className={`chart-shell ${dragging ? "dragging" : ""}`}
+      onPointerMove={onMove}
+      onPointerDown={onDown}
+      onPointerUp={onUp}
+      onPointerCancel={() => setDragging(false)}
+      onPointerLeave={() =>
+        !locked && !dragging && (setCursor(null), setCursorPrice(null))
+      }
+      onWheel={(e) => {
+        e.preventDefault();
+        setOffset((v) =>
+          Math.max(0, Math.min(maxOffset, v + Math.sign(e.deltaY) * 8)),
+        );
+      }}
+    >
+      <div className="chart-status">
+        <span>
+          {data[0]?.date.slice(0, 10)} — {data.at(-1)?.date.slice(0, 10)}
+        </span>
+        <span>
+          共 {bars.length} 条 ·{" "}
+          {offset === 0 ? "最新区间" : `向前 ${offset} 条`}
+        </span>
+        {offset > 0 && (
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setOffset(0)}
+          >
+            回到最新
+          </button>
+        )}
+      </div>
+      <div className="price-axis">
+        {[
+          high,
+          high - (high - low) * 0.25,
+          high - (high - low) * 0.5,
+          high - (high - low) * 0.75,
+          low,
+        ].map((v, i) => (
+          <span key={i}>{v.toFixed(2)}</span>
+        ))}
+      </div>
+      <svg
+        className="price-svg"
+        viewBox="0 0 100 88"
+        preserveAspectRatio="none"
+      >
+        {mode === "line" ? (
+          <polyline
+            points={data
+              .map((b, i) => `${i * w + w / 2},${y(b.close)}`)
+              .join(" ")}
+            fill="none"
+            stroke="#e84d72"
+            strokeWidth=".8"
+          />
+        ) : (
+          data.map((b, i) => {
+            const up = b.close >= b.open,
+              x = i * w + w / 2,
+              top = y(Math.max(b.open, b.close)),
+              bottom = y(Math.min(b.open, b.close));
+            return (
+              <g key={b.date} className={up ? "candle-up" : "candle-down"}>
+                <line x1={x} y1={y(b.high)} x2={x} y2={y(b.low)} />
+                <rect
+                  x={i * w + w * 0.18}
+                  y={top}
+                  width={w * 0.64}
+                  height={Math.max(0.6, bottom - top)}
+                />
+                {mode === "volume" && (
+                  <rect
+                    className="vol"
+                    x={i * w + w * 0.18}
+                    y={
+                      82 -
+                      Math.min(
+                        12,
+                        (b.volume / Math.max(...data.map((x) => x.volume))) *
+                          12,
+                      )
+                    }
+                    width={w * 0.64}
+                    height={Math.min(
+                      12,
+                      (b.volume / Math.max(...data.map((x) => x.volume))) * 12,
+                    )}
+                  />
+                )}
+              </g>
+            );
+          })
+        )}
+        {active && cursorPrice !== null && (
+          <g className="crosshair">
+            <line x1={cx} y1="0" x2={cx} y2="88" />
+            <line x1="0" y1={cy} x2="100" y2={cy} />
+          </g>
+        )}
+      </svg>
+      <div className="date-axis">
+        {[0, Math.floor((data.length - 1) / 2), data.length - 1].map((i) => (
+          <span key={i}>{data[i]?.date.slice(0, 10)}</span>
+        ))}
+      </div>
+      {cursorPrice !== null && (
+        <div
+          className="cursor-price"
+          style={{ top: `${Math.max(2, Math.min(92, (cy / 88) * 100))}%` }}
+        >
+          {cursorPrice.toFixed(2)}
+        </div>
+      )}
+      {active && (
+        <div className={`chart-tooltip ${cx > 65 ? "left" : "right"}`}>
+          <div>
+            <b>{active.date}</b>
+            <span>
+              {locked
+                ? "已锁定 · 点击解除"
+                : dragging
+                  ? "拖拽查看历史"
+                  : "点击锁定"}
+            </span>
+          </div>
+          <div>
+            光标价 <strong>{cursorPrice?.toFixed(2)}</strong>
+          </div>
+          <div>
+            开 <em>{active.open.toFixed(2)}</em>　高{" "}
+            <em>{active.high.toFixed(2)}</em>
+          </div>
+          <div>
+            低 <em>{active.low.toFixed(2)}</em>　收{" "}
+            <em>{active.close.toFixed(2)}</em>
+          </div>
+          <div>
+            涨跌{" "}
+            <em className={active.changePct >= 0 ? "up" : "down"}>
+              {pct(active.changePct)}
+            </em>
+            　量 <em>{money(active.volume)}</em>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function Home() {
+  const [tab, setTab] = useState("market"),
+    [quotes, setQuotes] = useState<Quote[]>([]),
+    [bars, setBars] = useState<Bar[]>([]),
+    [klineMeta, setKlineMeta] = useState({
+      source: "",
+      savedAt: "",
+      fromCache: false,
+    }),
+    [selected, setSelected] = useState("600519"),
+    [klt, setKlt] = useState("101"),
+    [chartMode, setChartMode] = useState("candle"),
+    [detail, setDetail] = useState<{
+      name?: string;
+      code?: string;
+      quote?: Partial<Quote>;
+      bids: { price: number | null; volume: number | null }[];
+      asks: { price: number | null; volume: number | null }[];
+    } | null>(null),
+    [stockNews, setStockNews] = useState<{
+      id: string; title: string; summary: string; publishedAt: string; source: string; url: string;
+    }[]>([]),
+    [newsUpdatedAt, setNewsUpdatedAt] = useState(""),
+    [aiAnalysis, setAiAnalysis] = useState<Record<string, any> | null>(null),
+    [aiLoading, setAiLoading] = useState(false),
+    [aiError, setAiError] = useState(""),
+    [aiMeta, setAiMeta] = useState({ model: "", generatedAt: "" }),
+    [loading, setLoading] = useState(true),
+    [error, setError] = useState(""),
+    [stamp, setStamp] = useState(""),
+    [watch, setWatch] = useState<string[]>(DEFAULT_WATCH),
+    [newCode, setNewCode] = useState(""),
+    [suggestions, setSuggestions] = useState<
+      {
+        exchange: string;
+        code: string;
+        name: string;
+        pinyin: string;
+        type: string;
+      }[]
+    >([]),
+    [searching, setSearching] = useState(false),
+    [watchPage, setWatchPage] = useState(0),
+    [watchFocused, setWatchFocused] = useState(false),
+    [watchGroups, setWatchGroups] = useState<
+      { id: string; name: string; codes: string[] }[]
+    >([{ id: "default", name: "默认分组", codes: DEFAULT_WATCH }]),
+    [activeWatchGroup, setActiveWatchGroup] = useState("default"),
+    [newGroupName, setNewGroupName] = useState(""),
+    [watchListPage, setWatchListPage] = useState(0),
+    [watchPerformance, setWatchPerformance] = useState<Record<string, {
+      month: number | null; ytd: number | null; rollingMonth: number | null; rollingYear: number | null; asOf: string | null;
+    }>>({}),
+    [watchMeta, setWatchMeta] = useState<Record<string, { addedAt: string; addedPrice: number | null }>>({}),
+    [watchSort, setWatchSort] = useState<{
+      key: "price" | "changePct" | "change" | "marketCap" | "floatMarketCap" | "turnover" | "mainNetInflow" | "month" | "ytd" | "rollingMonth" | "rollingYear" | "addedAt" | "addedPrice" | "watchReturn";
+      direction: "asc" | "desc";
+    }>({ key: "changePct", direction: "desc" }),
+    [holdingInput, setHoldingInput] = useState(""),
+    [holdingSuggestions, setHoldingSuggestions] = useState<
+      {
+        exchange: string;
+        code: string;
+        name: string;
+        pinyin: string;
+        type: string;
+      }[]
+    >([]),
+    [holdingSearching, setHoldingSearching] = useState(false),
+    [holdingPage, setHoldingPage] = useState(0),
+    [holdingFocused, setHoldingFocused] = useState(false),
+    [holdingListPage, setHoldingListPage] = useState(0),
+    [holdings, setHoldings] = useState<
+      { code: string; shares: number; cost: number }[]
+    >([]),
+    [learnQ, setLearnQ] = useState(""),
+    [lesson, setLesson] = useState(0),
+    [principal, setPrincipal] = useState(100000),
+    [rate, setRate] = useState(8),
+    [years, setYears] = useState(10);
+  useEffect(() => {
+    try {
+      const oldWatch =
+        JSON.parse(localStorage.getItem("wealth-watch") || "null") ||
+        DEFAULT_WATCH;
+      const savedGroups = JSON.parse(
+        localStorage.getItem("wealth-watch-groups-v1") || "null",
+      );
+      const groups =
+        Array.isArray(savedGroups) && savedGroups.length
+          ? savedGroups
+          : [{ id: "default", name: "默认分组", codes: oldWatch }];
+      setWatchGroups(groups);
+      setWatch(Array.from(new Set(groups.flatMap((g: { codes: string[] }) => g.codes))));
+      setWatchMeta(JSON.parse(localStorage.getItem("wealth-watch-meta-v1") || "{}"));
+      setHoldings(JSON.parse(localStorage.getItem("wealth-holdings") || "[]"));
+    } catch {}
+  }, []);
+  const codes = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...INDEX_CODES,
+          ...watch,
+          ...holdings.map((h) => h.code),
+          selected,
+        ]),
+      ),
+    [watch, holdings, selected],
+  );
+  const refresh = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const r = await fetch(`/api/market?codes=${codes.join(",")}`, {
+          cache: "no-store",
+        }),
+        j = await r.json();
+      if (!j.ok) throw new Error(j.error);
+      setQuotes(j.quotes);
+      setStamp(new Date(j.fetchedAt).toLocaleString("zh-CN"));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "行情请求失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, [codes.join(",")]);
+  useEffect(() => {
+    let active = true;
+    const cacheKey = `${selected}:${klt}:qfq`;
+    let hasCache = false;
+    try {
+      const all = JSON.parse(
+        localStorage.getItem("wealth-kline-cache-v1") || "{}",
+      ) as Record<
+        string,
+        { bars: Bar[]; savedAt: string; source: string }
+      >;
+      const hit = all[cacheKey];
+      if (hit?.bars?.length) {
+        hasCache = true;
+        setBars(hit.bars);
+        setKlineMeta({
+          source: hit.source,
+          savedAt: hit.savedAt,
+          fromCache: true,
+        });
+      }
+    } catch {}
+    if (!hasCache) {
+      setBars([]);
+      setKlineMeta({ source: "", savedAt: "", fromCache: false });
+    }
+    fetch(`/api/market?type=kline&code=${selected}&klt=${klt}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!active || !j.ok || !j.bars?.length) return;
+        const savedAt = j.fetchedAt || new Date().toISOString();
+        setBars(j.bars);
+        setKlineMeta({ source: j.source, savedAt, fromCache: false });
+        try {
+          const storageKey = "wealth-kline-cache-v1";
+          const all = JSON.parse(localStorage.getItem(storageKey) || "{}") as Record<
+            string,
+            { bars: Bar[]; savedAt: string; source: string }
+          >;
+          all[cacheKey] = { bars: j.bars, savedAt, source: j.source };
+          const trimmed = Object.fromEntries(
+            Object.entries(all)
+              .sort(
+                (a, b) =>
+                  new Date(b[1].savedAt).getTime() -
+                  new Date(a[1].savedAt).getTime(),
+              )
+              .slice(0, 24),
+          );
+          localStorage.setItem(storageKey, JSON.stringify(trimmed));
+        } catch {}
+      })
+      .catch(() => {
+        // Keep the last successful local copy visible when the upstream fails.
+      });
+    fetch(`/api/market?type=detail&code=${selected}`)
+      .then((r) => r.json())
+      .then((j) => { if(active) setDetail(j.ok ? j : null) })
+      .catch(() => { if(active) setDetail(null) });
+    return () => { active = false };
+  }, [selected, klt]);
+  useEffect(() => {
+    let active = true;
+    setDetail(null);
+    const updateDepth = () =>
+      fetch(`/api/market?type=detail&code=${selected}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((j) => { if(active && String(j.code||"") === selected.replace(/\D/g, "").slice(-6)) setDetail(j.ok ? j : null) })
+        .catch(() => {});
+    updateDepth();
+    const timer = setInterval(updateDepth, 5000);
+    return () => { active = false; clearInterval(timer) };
+  }, [selected]);
+  useEffect(() => {
+    if (!watch.length) return;
+    const storageKey="wealth-watch-performance-v1";
+    try{
+      const cached=JSON.parse(localStorage.getItem(storageKey)||"{}");
+      if(cached.results)setWatchPerformance(cached.results);
+    }catch{}
+    fetch(`/api/market?type=performance&codes=${watch.join(",")}`)
+      .then(r=>r.json()).then(j=>{
+        if(!j.ok)return;
+        setWatchPerformance(j.results||{});
+        localStorage.setItem(storageKey,JSON.stringify({savedAt:j.fetchedAt,results:j.results||{}}));
+      }).catch(()=>{});
+  }, [watch.join(",")]);
+  useEffect(() => {
+    const text = newCode.trim();
+    setWatchPage(0);
+    if (!text) {
+      setSuggestions([]);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(
+      () =>
+        fetch(`/api/market?type=search&q=${encodeURIComponent(text)}`)
+          .then((r) => r.json())
+          .then((j) => setSuggestions(j.results || []))
+          .catch(() => setSuggestions([]))
+          .finally(() => setSearching(false)),
+      260,
+    );
+    return () => clearTimeout(t);
+  }, [newCode]);
+  useEffect(() => {
+    const text = holdingInput.trim();
+    setHoldingPage(0);
+    if (!text) {
+      setHoldingSuggestions([]);
+      return;
+    }
+    setHoldingSearching(true);
+    const t = setTimeout(
+      () =>
+        fetch(`/api/market?type=search&q=${encodeURIComponent(text)}`)
+          .then((r) => r.json())
+          .then((j) => setHoldingSuggestions(j.results || []))
+          .catch(() => setHoldingSuggestions([]))
+          .finally(() => setHoldingSearching(false)),
+      260,
+    );
+    return () => clearTimeout(t);
+  }, [holdingInput]);
+  const map = useMemo(() => {
+    const m: Record<string, Quote> = {};
+    quotes.forEach((q) => {
+      m[`${q.market}.${q.code}`] = q;
+      if (!INDEX_CODES.includes(`${q.market}.${q.code}`)) m[q.code] = q;
+    });
+    return m;
+  }, [quotes]);
+  useEffect(() => {
+    if (!watch.length) return;
+    let changed=false;
+    const next={...watchMeta};
+    watch.forEach(code=>{
+      const current=next[code];
+      if(!current){next[code]={addedAt:new Date().toISOString(),addedPrice:map[code]?.price??null};changed=true}
+      else if(current.addedPrice==null&&Number.isFinite(map[code]?.price)){next[code]={...current,addedPrice:map[code].price};changed=true}
+    });
+    if(changed){setWatchMeta(next);localStorage.setItem("wealth-watch-meta-v1",JSON.stringify(next))}
+  }, [watch.join(","), map]);
+  const selectedDigits=selected.replace(/\D/g, "").slice(-6);
+  const q = detail?.code === selectedDigits && detail.quote
+    ? ({...(map[selected]||{}),...detail.quote,name:detail.name||map[selected]?.name||selectedDigits,code:selectedDigits} as Quote)
+    : map[selected];
+  useEffect(() => {
+    const keyword=q?.name;
+    setStockNews([]);setNewsUpdatedAt("");
+    if(!keyword)return;
+    let active=true;
+    const updateNews=()=>fetch(`/api/market?type=news&q=${encodeURIComponent(keyword)}`,{cache:"no-store"})
+      .then(r=>r.json()).then(j=>{if(active&&j.ok){setStockNews(j.items||[]);setNewsUpdatedAt(j.fetchedAt||"")}}).catch(()=>{});
+    updateNews();
+    const timer=setInterval(updateNews,300000);
+    return()=>{active=false;clearInterval(timer)};
+  }, [selected, q?.name]);
+  const closes = bars.map((b) => b.close),
+    ma = (n: number) =>
+      closes.length >= n
+        ? closes.slice(-n).reduce((a, b) => a + b, 0) / n
+        : NaN;
+  const signal =
+    bars.length < 60
+      ? "数据不足，暂停分析"
+      : !q
+        ? "行情快照不可用"
+        : q.price > ma(20) && ma(20) > ma(60)
+          ? "趋势偏强，等待回踩确认"
+          : q.price < ma(20) && ma(20) < ma(60)
+            ? "趋势偏弱，优先控制风险"
+            : "区间震荡，等待方向确认";
+  const tone =
+    bars.length < 60
+      ? "neutral"
+      : q && q.price > ma(20) && ma(20) > ma(60)
+        ? "bull"
+        : q && q.price < ma(20) && ma(20) < ma(60)
+          ? "bear"
+          : "neutral";
+  const holdingValue = holdings.reduce(
+      (s, h) => s + (map[h.code]?.price || 0) * h.shares,
+      0,
+    ),
+    holdingCost = holdings.reduce((s, h) => s + h.cost * h.shares, 0);
+  const saveWatch = (w: string[]) => {
+    setWatch(w);
+    localStorage.setItem("wealth-watch", JSON.stringify(w));
+  };
+  const saveWatchGroups = (groups: typeof watchGroups) => {
+    setWatchGroups(groups);
+    localStorage.setItem("wealth-watch-groups-v1", JSON.stringify(groups));
+    saveWatch(Array.from(new Set(groups.flatMap((g) => g.codes))));
+  };
+  const activeWatchCodes =
+    watchGroups.find((g) => g.id === activeWatchGroup)?.codes || [];
+  const addWatchGroup = () => {
+    const name = newGroupName.trim();
+    if (!name || watchGroups.some((g) => g.name === name)) return;
+    const id = `group-${Date.now()}`;
+    saveWatchGroups([...watchGroups, { id, name, codes: [] }]);
+    setActiveWatchGroup(id);
+    setNewGroupName("");
+    setWatchListPage(0);
+  };
+  const removeWatchCode = (code: string) =>
+    saveWatchGroups(
+      watchGroups.map((g) =>
+        g.id === activeWatchGroup
+          ? { ...g, codes: g.codes.filter((c) => c !== code) }
+          : g,
+      ),
+    );
+  const moveWatchCode = (code: string, targetId: string) => {
+    if (!targetId || targetId === activeWatchGroup) return;
+    saveWatchGroups(
+      watchGroups.map((g) => {
+        if (g.id === activeWatchGroup)
+          return { ...g, codes: g.codes.filter((c) => c !== code) };
+        if (g.id === targetId)
+          return { ...g, codes: g.codes.includes(code) ? g.codes : [...g.codes, code] };
+        return g;
+      }),
+    );
+  };
+  const saveHold = (h: typeof holdings) => {
+    setHoldings(h);
+    localStorage.setItem("wealth-holdings", JSON.stringify(h));
+  };
+  const addCode = (value?: string) => {
+    const c = (value || newCode).replace(/\D/g, "").slice(0, 6);
+    if (c.length === 6 && !activeWatchCodes.includes(c)) {
+      if(!watchMeta[c]){
+        const next={...watchMeta,[c]:{addedAt:new Date().toISOString(),addedPrice:map[c]?.price??null}};
+        setWatchMeta(next);localStorage.setItem("wealth-watch-meta-v1",JSON.stringify(next));
+      }
+      saveWatchGroups(
+        watchGroups.map((g) =>
+          g.id === activeWatchGroup ? { ...g, codes: [...g.codes, c] } : g,
+        ),
+      );
+    }
+    setNewCode("");
+    setSuggestions([]);
+  };
+  const addHolding = (code?: string) => {
+    const c = (code || holdingInput).replace(/\D/g, "").slice(0, 6);
+    if (c.length !== 6) return;
+    saveHold([...holdings, { code: c, shares: 100, cost: 0 }]);
+    setHoldingInput("");
+    setHoldingSuggestions([]);
+  };
+  const pageSize = 6,
+    watchPages = Math.max(1, Math.ceil(suggestions.length / pageSize)),
+    holdingPages = Math.max(1, Math.ceil(holdingSuggestions.length / pageSize));
+  const listPageSize = 8,
+    watchListPages = Math.max(1, Math.ceil(activeWatchCodes.length / listPageSize)),
+    holdingListPages = Math.max(1, Math.ceil(holdings.length / listPageSize));
+  const sortedWatchCodes = useMemo(
+    () =>
+      [...activeWatchCodes].sort((a, b) => {
+        const metric=(code:string)=>{
+          if(watchSort.key==="addedAt")return new Date(watchMeta[code]?.addedAt||0).getTime();
+          if(watchSort.key==="addedPrice")return watchMeta[code]?.addedPrice==null?NaN:Number(watchMeta[code].addedPrice);
+          if(watchSort.key==="watchReturn"){const p=watchMeta[code]?.addedPrice;return p?((Number(map[code]?.price)-p)/p)*100:NaN}
+          if(["month","ytd","rollingMonth","rollingYear"].includes(watchSort.key)){const value=watchPerformance[code]?.[watchSort.key as "month"|"ytd"|"rollingMonth"|"rollingYear"];return value==null?NaN:Number(value)}
+          return Number(map[code]?.[watchSort.key as "price"|"changePct"|"change"|"marketCap"|"floatMarketCap"|"turnover"|"mainNetInflow"]);
+        };
+        const av = metric(a);
+        const bv = metric(b);
+        const aok = Number.isFinite(av), bok = Number.isFinite(bv);
+        if (!aok && !bok) return 0;
+        if (!aok) return 1;
+        if (!bok) return -1;
+        return watchSort.direction === "asc" ? av - bv : bv - av;
+      }),
+    [activeWatchCodes.join(","), map, watchSort, watchPerformance, watchMeta],
+  );
+  const chooseWatchSort = (key: typeof watchSort.key, direction?: "asc" | "desc") => {
+    setWatchSort((current) => ({
+      key,
+      direction: direction || (current.key === key && current.direction === "desc" ? "asc" : "desc"),
+    }));
+    setWatchListPage(0);
+  };
+  const sortHead = (label: string, key: typeof watchSort.key) => (
+    <span
+      className={`sortable-head ${watchSort.key === key ? "active" : ""}`}
+      onClick={() => chooseWatchSort(key)}
+      title={`按${label}排序`}
+    >
+      {label}
+      <i aria-hidden="true">
+        {watchSort.key === key ? (watchSort.direction === "desc" ? "↓" : "↑") : "↕"}
+      </i>
+    </span>
+  );
+  useEffect(() => {
+    setWatchListPage((p) => Math.min(p, watchListPages - 1));
+  }, [watchListPages, activeWatchGroup]);
+  useEffect(() => {
+    setHoldingListPage((p) => Math.min(p, holdingListPages - 1));
+  }, [holdingListPages]);
+  const path = bars
+    .slice(-60)
+    .map((b, i, a) => {
+      const vals = a.map((x) => x.close),
+        mn = Math.min(...vals),
+        mx = Math.max(...vals);
+      return `${(i / (a.length - 1 || 1)) * 100},${85 - ((b.close - mn) / (mx - mn || 1)) * 70}`;
+    })
+    .join(" ");
+  const recent = bars.slice(-60),
+    support = recent.length ? Math.min(...recent.map((b) => b.low)) : NaN,
+    resistance = recent.length ? Math.max(...recent.map((b) => b.high)) : NaN,
+    avgVolume = recent.length
+      ? recent.reduce((s, b) => s + b.volume, 0) / recent.length
+      : NaN;
+  useEffect(() => {
+    setAiError("");
+    try {
+      const cached=JSON.parse(localStorage.getItem(`wealth-ai-analysis:${selected}`)||"null");
+      if(cached&&Date.now()-new Date(cached.generatedAt).getTime()<30*60*1000){setAiAnalysis(cached.analysis);setAiMeta({model:cached.model||"DeepSeek",generatedAt:cached.generatedAt})}
+      else {setAiAnalysis(null);setAiMeta({model:"",generatedAt:""})}
+    } catch { setAiAnalysis(null) }
+  }, [selected]);
+  const runAiAnalysis = async () => {
+    if(!q||bars.length<20)return;
+    setAiLoading(true);setAiError("");
+    try{
+      const response=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+        code:selectedDigits,name:q.name,
+        quote:{price:q.price,change:q.change,changePct:q.changePct,turnover:q.turnover,pe:q.pe,pb:q.pb,marketCap:q.marketCap,floatMarketCap:q.floatMarketCap,mainNetInflow:q.mainNetInflow},
+        technical:{klineAdjustment:"前复权",sampleCount:bars.length,asOf:bars.at(-1)?.date,ma20:Number.isFinite(ma(20))?+ma(20).toFixed(2):null,ma60:Number.isFinite(ma(60))?+ma(60).toFixed(2):null,support:Number.isFinite(support)?support:null,resistance:Number.isFinite(resistance)?resistance:null,averageVolume:Number.isFinite(avgVolume)?avgVolume:null,ruleSignal:signal},
+        news:stockNews.slice(0,8).map(n=>({title:n.title,summary:n.summary,publishedAt:n.publishedAt,source:n.source}))
+      })});
+      const json=await response.json();if(!json.ok)throw new Error(json.error||"AI分析失败");
+      setAiAnalysis(json.analysis);setAiMeta({model:json.model,generatedAt:json.generatedAt});
+      localStorage.setItem(`wealth-ai-analysis:${selected}`,JSON.stringify({analysis:json.analysis,model:json.model,generatedAt:json.generatedAt}));
+    }catch(error){setAiError(error instanceof Error?error.message:"AI分析失败")}finally{setAiLoading(false)}
+  };
+  const filtered = courseLessons
+    .map((x, i) => ({ x, i }))
+    .filter(({ x }) => JSON.stringify(x).toLowerCase().includes(learnQ.toLowerCase()));
+  const total = principal * Math.pow(1 + rate / 100, years);
+  return (
+    <main className="terminal">
+      <header>
+        <div className="brand">
+          <span>↗</span>
+          <b>WEALTH OS</b>
+          <small>真实数据投资工作台</small>
+        </div>
+        <nav>
+          {[
+            ["market", "市场"],
+            ["watch", "自选"],
+            ["portfolio", "持仓"],
+            ["strategy", "策略"],
+            ["learn", "学习"],
+          ].map((x) => (
+            <button
+              key={x[0]}
+              className={tab === x[0] ? "active" : ""}
+              onClick={() => setTab(x[0])}
+            >
+              {x[1]}
+            </button>
+          ))}
+        </nav>
+        <div className="head-actions">
+          <span className="status">
+            {error ? `数据异常：${error}` : `真实行情 · ${stamp || "连接中"}`}
+          </span>
+          <button onClick={refresh}>{loading ? "同步中" : "↻ 刷新"}</button>
+        </div>
+      </header>
+      <section className="page realapp">
+        {tab !== "learn" && (
+          <div className="sourcebar">
+            <b>数据口径</b> 东方财富 push2 / push2his · 行情与盘口约5秒刷新 ·
+            K线前复权 · <span>最后成功 {stamp || "-"}</span>
+          </div>
+        )}
+        {tab === "market" && (
+          <>
+            <div className="section-title">
+              <span>
+                <small>REAL MARKET</small>
+                <h2>市场总览</h2>
+              </span>
+              <span className="click-hint">点击指数查看K线详情</span>
+            </div>
+            <div className="index-grid">
+              {INDEX_CODES.map((c) => {
+                const x = map[c];
+                return (
+                  <article
+                    className={`index-card clickable ${(x?.changePct || 0) >= 0 ? "is-up" : "is-down"}`}
+                    key={c}
+                    onClick={() => {
+                      setSelected(c);
+                      setKlt("101");
+                    }}
+                  >
+                    <div>
+                      <span>{x?.name || c}</span>
+                      <b className={(x?.changePct || 0) >= 0 ? "up" : "down"}>
+                        {x ? pct(x.changePct) : "-"}
+                      </b>
+                    </div>
+                    <strong>{x?.price ?? "-"}</strong>
+                    <p>
+                      高 {x?.high ?? "-"}　低 {x?.low ?? "-"}
+                    </p>
+                    <p>成交额 {x ? money(x.amount) : "-"}</p>
+                  </article>
+                );
+              })}
+            </div>
+            <div className="market-workspace">
+              <article className="panel market-focus">
+                <div className="section-head">
+                  <div>
+                    <small>
+                      {q?.name || selected.replace(/^[01]\./, "")} ·{" "}
+                      {q?.code || selected.replace(/^[01]\./, "")}
+                    </small>
+                    <h2>
+                      {q?.price ?? "-"}{" "}
+                      <em className={(q?.changePct || 0) >= 0 ? "up" : "down"}>
+                        {q ? pct(q.changePct) : "-"}
+                      </em>
+                    </h2>
+                  </div>
+                  <select
+                    value={selected}
+                    onChange={(e) => setSelected(e.target.value)}
+                  >
+                    {!watch.includes(selected) && (
+                      <option value={selected}>{q?.name || selected}</option>
+                    )}
+                    {watch.map((c) => (
+                      <option key={c} value={c}>
+                        {map[c]?.name || c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="chart-toolbar">
+                  <div>
+                    {[
+                      ["5", "5分"],
+                      ["30", "30分"],
+                      ["60", "60分"],
+                      ["101", "日K"],
+                      ["102", "周K"],
+                      ["103", "月K"],
+                    ].map((x) => (
+                      <button
+                        className={klt === x[0] ? "active" : ""}
+                        key={x[0]}
+                        onClick={() => setKlt(x[0])}
+                      >
+                        {x[1]}
+                      </button>
+                    ))}
+                  </div>
+                  <div>
+                    {[
+                      ["candle", "蜡烛"],
+                      ["line", "分时线"],
+                      ["volume", "量价"],
+                    ].map((x) => (
+                      <button
+                        className={chartMode === x[0] ? "active" : ""}
+                        key={x[0]}
+                        onClick={() => setChartMode(x[0])}
+                      >
+                        {x[1]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {klineMeta.savedAt && (
+                  <div className={`kline-cache-state ${klineMeta.fromCache ? "cached" : "fresh"}`}>
+                    <span>{klineMeta.fromCache ? "本地缓存已秒开，后台更新中" : "K线已更新并保存到本地"}</span>
+                    <small>
+                      {klineMeta.source || "行情接口"} · {new Date(klineMeta.savedAt).toLocaleString("zh-CN")}
+                    </small>
+                  </div>
+                )}
+                <PriceChart bars={bars} mode={chartMode} />
+                <div className="quote-detail">
+                  <span>
+                    开盘 <b>{q?.open ?? "-"}</b>
+                  </span>
+                  <span>
+                    最高 <b>{q?.high ?? "-"}</b>
+                  </span>
+                  <span>
+                    最低 <b>{q?.low ?? "-"}</b>
+                  </span>
+                  <span>
+                    换手 <b>{q?.turnover ?? "-"}%</b>
+                  </span>
+                  <span>
+                    PE(TTM) <b>{q?.pe ?? "-"}</b>
+                  </span>
+                  <span>
+                    PB <b>{q?.pb ?? "-"}</b>
+                  </span>
+                </div>
+              </article>
+              <aside className="market-side">
+                <article className={`panel decision-live ${tone}`}>
+                  <small>系统观察 · {bars.length}条有效样本</small>
+                  <h2>{signal}</h2>
+                  <p>
+                    MA20 {Number.isFinite(ma(20)) ? ma(20).toFixed(2) : "-"} ·
+                    MA60 {Number.isFinite(ma(60)) ? ma(60).toFixed(2) : "-"}
+                  </p>
+                  <p>
+                    {bars.length < 60
+                      ? "数据不足时不输出方向性结论。"
+                      : "结合价格、均线与量能描述当前结构，不预测收益。"}
+                  </p>
+                </article>
+                <article className="panel orderbook">
+                  <div className="section-head">
+                    <h3>五档盘口</h3>
+                    <small>实时快照</small>
+                  </div>
+                  {selected.includes(".") ? (
+                    <p className="no-depth">指数不提供买卖五档</p>
+                  ) : (
+                    <>
+                      <div className="book asks">
+                        {(detail?.asks || [])
+                          .slice()
+                          .reverse()
+                          .map((l, i) => (
+                            <div key={i}>
+                              <span>卖{5 - i}</span>
+                              <b>{l.price ?? "-"}</b>
+                              <em>{l.volume ? money(l.volume) : "-"}</em>
+                            </div>
+                          ))}
+                      </div>
+                      <div className="book-mid">最新 {q?.price ?? "-"}</div>
+                      <div className="book bids">
+                        {(detail?.bids || []).map((l, i) => (
+                          <div key={i}>
+                            <span>买{i + 1}</span>
+                            <b>{l.price ?? "-"}</b>
+                            <em>{l.volume ? money(l.volume) : "-"}</em>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </article>
+              </aside>
+            </div>
+          </>
+        )}
+        {tab === "watch" && (
+          <>
+            <div className="toolrow">
+              <div>
+                <h1>自选股</h1>
+                <p>支持公司名、股票简称、拼音首字母或6位代码模糊搜索。</p>
+              </div>
+              <div className="stock-search">
+                <div>
+                  <input
+                    value={newCode}
+                    onFocus={() => setWatchFocused(true)}
+                    onBlur={() => setTimeout(() => setWatchFocused(false), 120)}
+                    onChange={(e) => setNewCode(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addCode(suggestions[0]?.code);
+                      if (e.key === "Escape") setWatchFocused(false);
+                    }}
+                    placeholder="如：茅台 / gzmt / 600519"
+                  />
+                  <button onClick={() => addCode(suggestions[0]?.code)}>
+                    添加
+                  </button>
+                </div>
+                {watchFocused && newCode.trim() !== "" && (
+                  <div
+                    className="suggestions"
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    {searching && <p>正在搜索…</p>}
+                    {!searching && suggestions.length === 0 && (
+                      <p>没有找到沪深北股票</p>
+                    )}
+                    <div className="suggestion-list">
+                      {suggestions
+                        .slice(watchPage * pageSize, (watchPage + 1) * pageSize)
+                        .map((s) => (
+                          <button
+                            key={`${s.exchange}${s.code}`}
+                            onClick={() => addCode(s.code)}
+                          >
+                            <span>
+                              <b>{s.name}</b>
+                              <small>{s.pinyin}</small>
+                            </span>
+                            <em>
+                              {s.exchange} {s.code}
+                            </em>
+                          </button>
+                        ))}
+                    </div>
+                    {suggestions.length > pageSize && (
+                      <div className="suggestion-pager">
+                        <button
+                          disabled={watchPage === 0}
+                          onClick={() => setWatchPage((p) => p - 1)}
+                        >
+                          上一页
+                        </button>
+                        <span>
+                          {watchPage + 1} / {watchPages} · 共{" "}
+                          {suggestions.length} 项
+                        </span>
+                        <button
+                          disabled={watchPage >= watchPages - 1}
+                          onClick={() => setWatchPage((p) => p + 1)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="watch-groups panel">
+              <div className="group-tabs" role="tablist" aria-label="自选股分组">
+                {watchGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    className={group.id === activeWatchGroup ? "active" : ""}
+                    onClick={() => {
+                      setActiveWatchGroup(group.id);
+                      setWatchListPage(0);
+                    }}
+                  >
+                    {group.name} <small>{group.codes.length}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="group-create">
+                <input
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addWatchGroup()}
+                  placeholder="输入新分组名称"
+                  aria-label="新分组名称"
+                />
+                <button onClick={addWatchGroup}>新建分组</button>
+              </div>
+            </div>
+            <div className="stock-table watch-table">
+              <div className="tr th">
+                <span>名称 / 代码</span>
+                {sortHead("最新价", "price")}
+                {sortHead("涨跌额", "change")}
+                {sortHead("涨跌幅", "changePct")}
+                {sortHead("总市值", "marketCap")}
+                {sortHead("流通市值", "floatMarketCap")}
+                {sortHead("换手率", "turnover")}
+                {sortHead("主力净流入", "mainNetInflow")}
+                {sortHead("本月涨幅", "month")}
+                {sortHead("今年涨幅", "ytd")}
+                {sortHead("近一月涨幅", "rollingMonth")}
+                {sortHead("近一年涨幅", "rollingYear")}
+                {sortHead("自选日期", "addedAt")}
+                {sortHead("自选价格", "addedPrice")}
+                {sortHead("自选收益", "watchReturn")}
+                <span>移动 / 操作</span>
+              </div>
+              {sortedWatchCodes
+                .slice(
+                  watchListPage * listPageSize,
+                  (watchListPage + 1) * listPageSize,
+                )
+                .map((c) => {
+                const x = map[c];
+                const performance=watchPerformance[c];
+                const meta=watchMeta[c];
+                const watchReturn=meta?.addedPrice&&x?.price?((x.price-meta.addedPrice)/meta.addedPrice)*100:null;
+                return (
+                  <div
+                    className="tr"
+                    key={c}
+                    onClick={() => {
+                      setSelected(c);
+                      setTab("market");
+                    }}
+                  >
+                    <span>
+                      <b>{x?.name || "数据暂不可用"}</b>
+                      <small>{c}</small>
+                    </span>
+                    <span>{x?.price ?? "-"}</span>
+                    <span className={(x?.change || 0) >= 0 ? "up" : "down"}>
+                      {x && Number.isFinite(Number(x.change)) ? `${Number(x.change) >= 0 ? "+" : ""}${x.change}` : "-"}
+                    </span>
+                    <span className={(x?.changePct || 0) >= 0 ? "up" : "down"}>
+                      {x ? pct(x.changePct) : "-"}
+                    </span>
+                    <span>{x ? money(x.marketCap) : "-"}</span>
+                    <span>{x ? money(x.floatMarketCap) : "-"}</span>
+                    <span>{x && Number.isFinite(Number(x.turnover)) ? `${x.turnover}%` : "-"}</span>
+                    <span className={(x?.mainNetInflow || 0) >= 0 ? "up" : "down"}>
+                      {x ? money(x.mainNetInflow) : "-"}
+                    </span>
+                    {[performance?.month,performance?.ytd,performance?.rollingMonth,performance?.rollingYear].map((value,index)=>(
+                      <span key={index} className={(value??0)>=0?"up":"down"}>{value==null?"-":pct(value)}</span>
+                    ))}
+                    <span>{meta?.addedAt?new Date(meta.addedAt).toLocaleDateString("zh-CN"):"-"}</span>
+                    <span>{meta?.addedPrice==null?"-":meta.addedPrice.toFixed(2)}</span>
+                    <span className={(watchReturn??0)>=0?"up":"down"}>{watchReturn==null?"-":pct(watchReturn)}</span>
+                    <span className="watch-actions" onClick={(e) => e.stopPropagation()}>
+                      <select
+                        value=""
+                        disabled={watchGroups.length < 2}
+                        aria-label={`移动 ${x?.name || c} 到其他分组`}
+                        onChange={(e) => moveWatchCode(c, e.target.value)}
+                      >
+                        <option value="">移动到…</option>
+                        {watchGroups.filter((g) => g.id !== activeWatchGroup).map((g) => (
+                          <option key={g.id} value={g.id}>{g.name}</option>
+                        ))}
+                      </select>
+                      <button onClick={() => removeWatchCode(c)}>移除</button>
+                    </span>
+                  </div>
+                );
+              })}
+              {activeWatchCodes.length === 0 && (
+                <div className="table-empty">当前分组暂无股票，请在上方搜索添加。</div>
+              )}
+              {activeWatchCodes.length > listPageSize && (
+                <div className="list-pager">
+                  <button disabled={watchListPage === 0} onClick={() => setWatchListPage((p) => p - 1)}>上一页</button>
+                  <span>第 {watchListPage + 1} / {watchListPages} 页 · 共 {activeWatchCodes.length} 只</span>
+                  <button disabled={watchListPage >= watchListPages - 1} onClick={() => setWatchListPage((p) => p + 1)}>下一页</button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        {tab === "portfolio" && (
+          <>
+            <div className="toolrow">
+              <div>
+                <h1>我的持仓</h1>
+                <p>输入公司名、简称、拼音或代码选择股票，再填写股数和成本。</p>
+              </div>
+              <div className="stock-search holding-search">
+                <div>
+                  <input
+                    value={holdingInput}
+                    onFocus={() => setHoldingFocused(true)}
+                    onBlur={() =>
+                      setTimeout(() => setHoldingFocused(false), 120)
+                    }
+                    onChange={(e) => setHoldingInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter")
+                        addHolding(holdingSuggestions[0]?.code);
+                      if (e.key === "Escape") setHoldingFocused(false);
+                    }}
+                    placeholder="如：宁德时代 / ndsd / 300750"
+                  />
+                  <button
+                    onClick={() => addHolding(holdingSuggestions[0]?.code)}
+                  >
+                    新增仓位
+                  </button>
+                </div>
+                {holdingFocused && holdingInput.trim() !== "" && (
+                  <div
+                    className="suggestions"
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    {holdingSearching && <p>正在搜索…</p>}
+                    {!holdingSearching && holdingSuggestions.length === 0 && (
+                      <p>没有找到沪深北股票</p>
+                    )}
+                    <div className="suggestion-list">
+                      {holdingSuggestions
+                        .slice(
+                          holdingPage * pageSize,
+                          (holdingPage + 1) * pageSize,
+                        )
+                        .map((s) => (
+                          <button
+                            key={`${s.exchange}${s.code}`}
+                            onClick={() => addHolding(s.code)}
+                          >
+                            <span>
+                              <b>{s.name}</b>
+                              <small>{s.pinyin}</small>
+                            </span>
+                            <em>
+                              {s.exchange} {s.code}
+                            </em>
+                          </button>
+                        ))}
+                    </div>
+                    {holdingSuggestions.length > pageSize && (
+                      <div className="suggestion-pager">
+                        <button
+                          disabled={holdingPage === 0}
+                          onClick={() => setHoldingPage((p) => p - 1)}
+                        >
+                          上一页
+                        </button>
+                        <span>
+                          {holdingPage + 1} / {holdingPages} · 共{" "}
+                          {holdingSuggestions.length} 项
+                        </span>
+                        <button
+                          disabled={holdingPage >= holdingPages - 1}
+                          onClick={() => setHoldingPage((p) => p + 1)}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="portfolio-summary">
+              <div>
+                <small>持仓市值</small>
+                <b>¥ {money(holdingValue)}</b>
+              </div>
+              <div>
+                <small>持仓成本</small>
+                <b>¥ {money(holdingCost)}</b>
+              </div>
+              <div>
+                <small>浮动盈亏</small>
+                <b className={holdingValue - holdingCost >= 0 ? "up" : "down"}>
+                  ¥ {money(holdingValue - holdingCost)}
+                </b>
+              </div>
+            </div>
+            {holdings.length === 0 ? (
+              <div className="empty">暂无持仓，请在上方搜索并选择股票。</div>
+            ) : (
+              <div className="stock-table holding-table">
+                <div className="tr holding holding-head">
+                  <span>股票代码</span>
+                  <span>持有股数</span>
+                  <span>每股成本</span>
+                  <span>名称 / 当前市值</span>
+                  <span>操作</span>
+                </div>
+                {holdings
+                  .slice(
+                    holdingListPage * listPageSize,
+                    (holdingListPage + 1) * listPageSize,
+                  )
+                  .map((h, pageIndex) => {
+                  const i = holdingListPage * listPageSize + pageIndex;
+                  const x = map[h.code];
+                  return (
+                    <div className="tr holding" key={i}>
+                      <input
+                        value={h.code}
+                        aria-label="股票代码"
+                        onChange={(e) => {
+                          const z = [...holdings];
+                          z[i] = {
+                            ...h,
+                            code: e.target.value.replace(/\D/g, "").slice(0, 6),
+                          };
+                          saveHold(z);
+                        }}
+                      />
+                      <input
+                        type="number"
+                        value={h.shares}
+                        aria-label="持有股数"
+                        onChange={(e) => {
+                          const z = [...holdings];
+                          z[i] = { ...h, shares: +e.target.value };
+                          saveHold(z);
+                        }}
+                      />
+                      <input
+                        type="number"
+                        value={h.cost}
+                        aria-label="每股成本"
+                        onChange={(e) => {
+                          const z = [...holdings];
+                          z[i] = { ...h, cost: +e.target.value };
+                          saveHold(z);
+                        }}
+                      />
+                      <span>
+                        <b>{x?.name || "行情暂不可用"}</b>
+                        <small>
+                          现价 {x?.price ?? "-"} · 市值 ¥
+                          {money((x?.price || 0) * h.shares)}
+                        </small>
+                      </span>
+                      <button
+                        onClick={() =>
+                          saveHold(holdings.filter((_, j) => i !== j))
+                        }
+                      >
+                        删除
+                      </button>
+                    </div>
+                  );
+                })}
+                {holdings.length > listPageSize && (
+                  <div className="list-pager">
+                    <button disabled={holdingListPage === 0} onClick={() => setHoldingListPage((p) => p - 1)}>上一页</button>
+                    <span>第 {holdingListPage + 1} / {holdingListPages} 页 · 共 {holdings.length} 个持仓</span>
+                    <button disabled={holdingListPage >= holdingListPages - 1} onClick={() => setHoldingListPage((p) => p + 1)}>下一页</button>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        {tab === "strategy" && (
+          <>
+            <div className="strategy-title">
+              <div>
+                <span className="eyebrow">RULE-BASED ENGINE</span>
+                <h1>纪律策略室</h1>
+                <p>
+                  以真实前复权日线、价格位置、估值和量能交叉验证；数据不足不分析。
+                </p>
+              </div>
+              <select
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
+              >
+                {watch.map((c) => (
+                  <option key={c} value={c}>
+                    {map[c]?.name || c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <article className={`decision panel strategy-tone ${tone}`}>
+              <small>当前结构判断</small>
+              <h2>{signal}</h2>
+              <p>
+                {q?.name || selected} 最新价 {q?.price ?? "-"}；20日均线{" "}
+                {Number.isFinite(ma(20)) ? ma(20).toFixed(2) : "-"}，60日均线{" "}
+                {Number.isFinite(ma(60)) ? ma(60).toFixed(2) : "-"}
+                。红色表示偏多，绿色表示偏空，黄色表示中性或数据不足。
+              </p>
+              <div className="decision-metrics">
+                <div>
+                  <b>{q ? pct(q.changePct) : "-"}</b>
+                  <span>当日涨跌</span>
+                </div>
+                <div>
+                  <b>{q?.pe ?? "-"}</b>
+                  <span>PE(TTM)</span>
+                </div>
+                <div>
+                  <b>{q?.pb ?? "-"}</b>
+                  <span>市净率</span>
+                </div>
+                <div>
+                  <b>{bars.length}</b>
+                  <span>有效样本</span>
+                </div>
+              </div>
+            </article>
+            <div className="strategy-grid">
+              <article className="panel">
+                <small>趋势与量能</small>
+                <h3>
+                  {tone === "bull"
+                    ? "价格位于中期均线上方"
+                    : tone === "bear"
+                      ? "价格位于中期均线下方"
+                      : "尚未形成一致方向"}
+                </h3>
+                <p>
+                  近60期均量{" "}
+                  {Number.isFinite(avgVolume) ? money(avgVolume) : "-"}
+                  ；当前成交量 {bars.length ? money(bars.at(-1)!.volume) : "-"}
+                  。
+                </p>
+              </article>
+              <article className="panel">
+                <small>关键区间</small>
+                <h3>
+                  {Number.isFinite(support)
+                    ? `${support.toFixed(2)} — ${resistance.toFixed(2)}`
+                    : "数据不足"}
+                </h3>
+                <p>区间来自最近60期最高与最低，仅作结构参考，不是目标价。</p>
+              </article>
+              <article className="panel">
+                <small>触发与失效</small>
+                <h3>
+                  {tone === "bull"
+                    ? "回踩MA20企稳后再确认"
+                    : tone === "bear"
+                      ? "重新站上MA20前保持谨慎"
+                      : "等待突破区间边界"}
+                </h3>
+                <p>
+                  {tone === "bull"
+                    ? "跌破MA60则原偏强结构失效。"
+                    : tone === "bear"
+                      ? "放量站回MA60后重新评估。"
+                      : "突破需量能确认，假突破则继续观察。"}
+                </p>
+              </article>
+            </div>
+            <section className="strategy-news panel">
+              <div className="section-head">
+                <div>
+                  <small>公开消息面 · {q?.name || selected}</small>
+                  <h2>实时事件与市场热点</h2>
+                </div>
+                <span>{newsUpdatedAt ? `更新 ${new Date(newsUpdatedAt).toLocaleTimeString("zh-CN")}` : "正在获取"}</span>
+              </div>
+              <p className="news-note">标题与摘要来自公开资讯检索；标签按关键词归类，不代表利好、利空判断。点击标题可查看原文。</p>
+              <div className="stock-news-list">
+                {stockNews.length ? stockNews.slice(0,8).map(item=>{
+                  const tag=/业绩|年报|季报|营收|净利润/.test(item.title)?"业绩":/回购|增持|减持/.test(item.title)?"股东动向":/并购|收购|重组/.test(item.title)?"资本运作":/政策|监管|交易所/.test(item.title)?"政策监管":/产品|发布|技术|研发/.test(item.title)?"产业动态":"公司资讯";
+                  return <article key={item.id}>
+                    <div><span className="event-tag">{tag}</span><time>{item.publishedAt}</time><em>{item.source}</em></div>
+                    <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a>
+                    {item.summary&&<p>{item.summary}</p>}
+                  </article>
+                }):<div className="news-empty">暂未取得该股票的公开资讯，系统不会生成虚构消息。</div>}
+              </div>
+            </section>
+            <section className="ai-strategy panel">
+              <div className="section-head">
+                <div><small>DEEPSEEK AI · 数据约束分析</small><h2>智能策略解读</h2></div>
+                <button disabled={aiLoading||!q||bars.length<20} onClick={runAiAnalysis}>{aiLoading?"分析中…":aiAnalysis?"重新生成":"生成AI分析"}</button>
+              </div>
+              <p className="ai-intro">模型只接收页面当前股票的真实行情、技术统计和公开消息摘要。结果缓存30分钟，点击重新生成才会再次产生API调用费用。</p>
+              {aiError&&<div className="ai-error">{aiError}</div>}
+              {!aiAnalysis&&!aiError&&<div className="ai-placeholder">点击“生成AI分析”后，DeepSeek将基于当前数据给出证据、消息影响、情景与风险。未配置密钥时规则证据层仍可正常使用。</div>}
+              {aiAnalysis&&<div className="ai-result">
+                <div className="ai-summary"><span className={`ai-stance ${aiAnalysis.stance==="偏强"?"bull":aiAnalysis.stance==="偏弱"?"bear":"neutral"}`}>{aiAnalysis.stance||"待判断"}</span><strong>{aiAnalysis.summary}</strong><small>置信度 {aiAnalysis.confidence||"-"}</small></div>
+                <div className="ai-columns">
+                  <article><h3>核心证据</h3><ul>{(aiAnalysis.evidence||[]).map((x:string,i:number)=><li key={i}>{x}</li>)}</ul></article>
+                  <article><h3>主要风险</h3><ul>{(aiAnalysis.risks||[]).map((x:string,i:number)=><li key={i}>{x}</li>)}</ul></article>
+                </div>
+                {!!aiAnalysis.newsImpact?.length&&<article className="ai-events"><h3>消息影响</h3>{aiAnalysis.newsImpact.map((x:any,i:number)=><div key={i}><b>{x.direction}</b><span>{x.event}</span><p>{x.reason}</p></div>)}</article>}
+                {!!aiAnalysis.scenarios?.length&&<article className="ai-scenarios"><h3>纪律情景</h3>{aiAnalysis.scenarios.map((x:any,i:number)=><div key={i}><b>{x.name}</b><span>触发：{x.trigger}</span><p>{x.response}</p></div>)}</article>}
+                {!!aiAnalysis.dataGaps?.length&&<p className="ai-gaps">数据缺口：{aiAnalysis.dataGaps.join("；")}</p>}
+                <footer><span>{aiMeta.model} · {new Date(aiMeta.generatedAt).toLocaleString("zh-CN")}</span><span>{aiAnalysis.disclaimer}</span></footer>
+              </div>}
+            </section>
+            <section className="strategy-method panel">
+              <div><b>双层策略结构</b><span>规则证据层 + DeepSeek解释层</span></div>
+              <p>规则层负责可复核的行情、K线、均线、成交量和估值计算；DeepSeek只在你点击生成时读取当前快照，归纳消息、证据、情景和风险。</p>
+              <small>AI输出不回写行情，不替代原始数据，也不构成收益保证或自动交易指令。</small>
+            </section>
+          </>
+        )}
+        {tab === "learn" && (
+          <>
+            <div className="learn-hero">
+              <div>
+                <span className="eyebrow">WEALTH ACADEMY</span>
+                <h1>金融知识，从零基础到独立分析</h1>
+                <p>以理论框架为主线，配合市场案例、常见误区与风险边界；仅在需要计算的概念中提供公式和数字演算。</p>
+              </div>
+              <div className="progress-card">
+                <div className="ring">
+                  <b>{Math.round(((lesson + 1) / courseLessons.length) * 100)}%</b>
+                </div>
+                <div>
+                  <small>当前章节</small>
+                  <h3>{courseLessons[lesson].title}</h3>
+                  <p>
+                    {lesson + 1} / {courseLessons.length}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="academy">
+              <aside>
+                <input
+                  value={learnQ}
+                  onChange={(e) => setLearnQ(e.target.value)}
+                  placeholder="搜索术语或知识点"
+                />
+                {filtered.map(({ x, i }) => (
+                  <button
+                    className={lesson === i ? "active" : ""}
+                    key={i}
+                    onClick={() => setLesson(i)}
+                  >
+                    <small>
+                      {x.stage} · {String(i + 1).padStart(2, "0")}
+                    </small>
+                    <b>{x.title}</b>
+                  </button>
+                ))}
+              </aside>
+              <article className="lesson panel">
+                <span className="eyebrow">
+                  {courseLessons[lesson].stage}篇 · 知识点 {lesson + 1}
+                </span>
+                <h1>{courseLessons[lesson].title}</h1>
+                <p className="lead">{courseLessons[lesson].summary}</p>
+                <section className="lesson-section">
+                  <h3>核心理论</h3>
+                  <ul>{courseLessons[lesson].theory.map((item,i)=><li key={i}>{item}</li>)}</ul>
+                </section>
+                <section className="lesson-section example-box">
+                  <h3>实际例子</h3>
+                  <p>{courseLessons[lesson].example}</p>
+                </section>
+                {courseLessons[lesson].formula && (
+                  <section className="lesson-section formula-box">
+                    <h3>公式与适用口径</h3>
+                    <strong>{courseLessons[lesson].formula}</strong>
+                    <p>{courseLessons[lesson].calculation}</p>
+                  </section>
+                )}
+                <section className="lesson-section pitfall-box">
+                  <h3>常见误区</h3>
+                  <ul>{courseLessons[lesson].pitfalls.map((item,i)=><li key={i}>{item}</li>)}</ul>
+                </section>
+                <div className="tip">
+                  <b>学完这一节：</b>尝试用自己的话解释核心概念，并找一个现实资产判断它的收益来源、风险和失效条件。
+                </div>
+                {courseLessons[lesson].interactive === "compound" && (<div className="interactive-case"><hr />
+                <h3>复利互动计算案例</h3>
+                <label>
+                  本金{" "}
+                  <input
+                    type="number"
+                    value={principal}
+                    onChange={(e) => setPrincipal(+e.target.value)}
+                  />
+                </label>
+                <label>
+                  年化假设 {rate}%{" "}
+                  <input
+                    type="range"
+                    min="0"
+                    max="20"
+                    value={rate}
+                    onChange={(e) => setRate(+e.target.value)}
+                  />
+                </label>
+                <label>
+                  年限 {years}年{" "}
+                  <input
+                    type="range"
+                    min="1"
+                    max="40"
+                    value={years}
+                    onChange={(e) => setYears(+e.target.value)}
+                  />
+                </label>
+                <div className="result">
+                  <small>教学演算终值</small>
+                  <strong>¥ {Math.round(total).toLocaleString("zh-CN")}</strong>
+                  <span>不含税费，不代表收益承诺</span>
+                </div>
+                </div>)}
+              </article>
+            </div>
+          </>
+        )}
+      </section>
+      <footer>
+        <span>WEALTH OS · 真实数据、明确口径、失败不造数</span>
+        <span>研究与学习辅助，不构成投资建议</span>
+      </footer>
+    </main>
+  );
 }

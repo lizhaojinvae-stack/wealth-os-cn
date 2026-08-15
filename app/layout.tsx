@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "WEALTH OS｜投资决策与学习系统",
-  description: "融合市场看板、纪律策略与金融知识课程的个人投资操作系统。",
+  title: "WEALTH OS｜真实数据投资工作台",
+  description: "融合真实行情、自选持仓、纪律策略、DeepSeek辅助分析与金融知识课程的个人投资工作台。",
   icons: { icon: "/favicon.svg" },
   openGraph: {
-    title: "WEALTH OS｜投资决策与学习系统",
+    title: "WEALTH OS｜真实数据投资工作台",
     description: "看清市场 · 执行纪律 · 系统学习",
     images: [{ url: "/og.png", width: 1200, height: 630 }],
     locale: "zh_CN",
