@@ -24,6 +24,9 @@ export async function GET(request: Request) {
       const minAmountYi = Math.max(0, numberParam("minAmountYi", 0));
       const minCapYi = Math.max(0, numberParam("minCapYi", 0));
       const maxPe = Math.max(0, numberParam("maxPe", 0));
+      const maxPb = Math.max(0, numberParam("maxPb", 0));
+      const minVolumeRatio = Math.max(0, numberParam("minVolumeRatio", 0));
+      const minMainFlowYi = numberParam("minMainFlowYi", -99999);
       const sort = ["changePct", "amount", "turnover", "marketCap", "mainNetInflow", "volumeRatio"].includes(url.searchParams.get("sort") || "") ? url.searchParams.get("sort")! : "changePct";
       const direction = url.searchParams.get("direction") === "asc" ? "asc" : "desc";
       const segment = Math.min(6, Math.max(1, Math.floor(numberParam("segment", 1))));
@@ -43,10 +46,10 @@ export async function GET(request: Request) {
         changePct: Number(row.f3) || 0, change: Number(row.f4) || 0, amount: Number(row.f6) || 0, turnover: Number(row.f8) || 0,
         pe: Number(row.f9) || 0, volumeRatio: Number(row.f10) || 0, marketCap: Number(row.f20) || 0,
         floatMarketCap: Number(row.f21) || 0, pb: Number(row.f23) || 0, mainNetInflow: Number(row.f62) || 0,
-      })).filter((row) => /^\d{6}$/.test(row.code) && row.price > 0 && row.changePct >= minChange && row.changePct <= maxChange && row.turnover >= minTurnover && row.amount >= minAmountYi * 100000000 && row.marketCap >= minCapYi * 100000000 && (!maxPe || (row.pe > 0 && row.pe <= maxPe)));
+      })).filter((row) => /^\d{6}$/.test(row.code) && row.price > 0 && row.changePct >= minChange && row.changePct <= maxChange && row.turnover >= minTurnover && row.amount >= minAmountYi * 100000000 && row.marketCap >= minCapYi * 100000000 && (!maxPe || (row.pe > 0 && row.pe <= maxPe)) && (!maxPb || (row.pb > 0 && row.pb <= maxPb)) && row.volumeRatio >= minVolumeRatio && row.mainNetInflow >= minMainFlowYi * 100000000);
       const sortKey: Record<string, keyof typeof rows[number]> = { changePct: "changePct", amount: "amount", turnover: "turnover", marketCap: "marketCap", mainNetInflow: "mainNetInflow", volumeRatio: "volumeRatio" };
       rows.sort((a, b) => (Number(a[sortKey[sort]]) - Number(b[sortKey[sort]])) * (direction === "asc" ? 1 : -1));
-      return Response.json({ ok: true, source: "东方财富沪深京A股实时行情", fetchedAt: new Date().toISOString(), universeTotal, segment, scanned: rawRows.length, results: rows, filters: { minChange, maxChange, minTurnover, minAmountYi, minCapYi, maxPe, sort, direction } });
+      return Response.json({ ok: true, source: "东方财富沪深京A股实时行情", fetchedAt: new Date().toISOString(), universeTotal, segment, scanned: rawRows.length, results: rows, filters: { minChange, maxChange, minTurnover, minAmountYi, minCapYi, maxPe, maxPb, minVolumeRatio, minMainFlowYi, sort, direction } });
     }
     if (type === "radar") {
       const radarDate = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, "");

@@ -53,7 +53,8 @@ type RadarBoard = { kind: "industry" | "concept"; code: string; name: string; ch
 type LimitUpStock = { code: string; market: number; name: string; price: number; changePct: number; amount: number; floatMarketCap: number; marketCap: number; turnover: number; streak: number; firstSealTime: string; lastSealTime: string; sealedAmount: number; openCount: number; industry: string; streakDays: number };
 type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
 type ScreenerRow = { code: string; market: number; name: string; price: number; changePct: number; change: number; amount: number; turnover: number; pe: number; volumeRatio: number; marketCap: number; floatMarketCap: number; pb: number; mainNetInflow: number };
-type ScreenerFilters = { minChange: number; maxChange: number; minTurnover: number; minAmountYi: number; minCapYi: number; maxPe: number; sort: "changePct" | "amount" | "turnover" | "marketCap" | "mainNetInflow" | "volumeRatio"; direction: "asc" | "desc" };
+type ScreenerFilters = { minChange: number; maxChange: number; minTurnover: number; minAmountYi: number; minCapYi: number; maxPe: number; maxPb: number; minVolumeRatio: number; minMainFlowYi: number; sort: "changePct" | "amount" | "turnover" | "marketCap" | "mainNetInflow" | "volumeRatio"; direction: "asc" | "desc" };
+type SavedScreener = { id: string; name: string; filters: ScreenerFilters; createdAt: string };
 type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; dataHealth?: "ok" | "stale" | "insufficient"; structureBroken?: boolean; trendWeak?: boolean; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
 type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
 type BacktestResult = { source: string; fetchedAt: string; code: string; name: string; range: { start: string; end: string; samples: number }; parameters: { initial: number; feeRate: number; slippage: number; entry: string; exit: string; lotSize: number }; metrics: { finalEquity: number; totalReturn: number; annualized: number; maxDrawdown: number; trades: number; winRate: number; profitFactor: number | null; benchmarkReturn: number }; curve: { date: string; equity: number; benchmark: number; drawdown: number }[]; trades: { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string }[] };
@@ -556,7 +557,9 @@ export default function Home() {
     [alertSettings, setAlertSettings] = useState<AlertSettings>(DEFAULT_ALERT_SETTINGS),
     [alertFilter, setAlertFilter] = useState<"all" | AlertLevel>("all"),
     [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default"),
-    [screenerFilters, setScreenerFilters] = useState<ScreenerFilters>({ minChange: -20, maxChange: 20, minTurnover: 0, minAmountYi: 1, minCapYi: 0, maxPe: 0, sort: "changePct", direction: "desc" }),
+    [screenerFilters, setScreenerFilters] = useState<ScreenerFilters>({ minChange: -20, maxChange: 20, minTurnover: 0, minAmountYi: 1, minCapYi: 0, maxPe: 0, maxPb: 0, minVolumeRatio: 0, minMainFlowYi: -99999, sort: "changePct", direction: "desc" }),
+    [savedScreeners, setSavedScreeners] = useState<SavedScreener[]>([]),
+    [screenerName, setScreenerName] = useState(""),
     [screenerRows, setScreenerRows] = useState<ScreenerRow[]>([]),
     [screenerAllRows, setScreenerAllRows] = useState<ScreenerRow[]>([]),
     [screenerPage, setScreenerPage] = useState(1),
@@ -617,6 +620,7 @@ export default function Home() {
       watchGroups: read("wealth-watch-groups-v1", [{ id: "default", name: "默认分组", codes: legacyWatch }]),
       watchMeta: read("wealth-watch-meta-v1", {}), holdings: read("wealth-holdings", []),
       alerts: read("wealth-alerts-v1", []), alertSettings: read("wealth-alert-settings-v1", DEFAULT_ALERT_SETTINGS),
+      savedScreeners: read("wealth-saved-screeners-v1", []),
       planEvents: read("wealth-plan-events-v2", []), planStatuses: read("wealth-plan-status-v2", {}),
       simulator: read("wealth-simulator-v1", { cash: 1000000, positions: [], orders: [] }),
       aiAnalyses,
@@ -628,6 +632,7 @@ export default function Home() {
     setWatchGroups(groups); setWatch(Array.from(new Set(groups.flatMap((group: { codes?: string[] }) => group.codes || []))));
     setWatchMeta(data.watchMeta || {}); setHoldings(Array.isArray(data.holdings) ? data.holdings : []);
     setAlerts(compactAlertHistory(Array.isArray(data.alerts) ? data.alerts : [])); setAlertSettings({ ...DEFAULT_ALERT_SETTINGS, ...(data.alertSettings || {}) });
+    setSavedScreeners(Array.isArray(data.savedScreeners) ? data.savedScreeners : []);
     setPlanEvents(Array.isArray(data.planEvents) ? data.planEvents : []); planStatusRef.current = data.planStatuses || {};
     setAiAnalyses(data.aiAnalyses || {});
     const nextProfile = { ...DEFAULT_PROFILE, ...(data.profile || {}) }; setProfile(nextProfile);
@@ -682,6 +687,7 @@ export default function Home() {
         ...DEFAULT_ALERT_SETTINGS,
         ...JSON.parse(localStorage.getItem("wealth-alert-settings-v1") || "{}"),
       });
+      setSavedScreeners(JSON.parse(localStorage.getItem("wealth-saved-screeners-v1") || "[]"));
       if ("Notification" in window) setNotificationPermission(Notification.permission);
       // v2 starts with the corrected lifecycle model; old “数据不足/误判失效” logs are intentionally not migrated.
       setPlanEvents(JSON.parse(localStorage.getItem("wealth-plan-events-v2") || "[]"));
@@ -753,6 +759,14 @@ export default function Home() {
     finally { setScreenerLoading(false); }
   };
   const showScreenerPage = (page: number) => { setScreenerPage(page); setScreenerRows(screenerAllRows.slice((page - 1) * 30, page * 30)); };
+  const screenerPresets: { name: string; note: string; filters: ScreenerFilters }[] = [
+    { name: "放量强势", note: "量比≥1.5、换手≥3%、资金净流入", filters: { minChange: 1, maxChange: 9.8, minTurnover: 3, minAmountYi: 3, minCapYi: 30, maxPe: 0, maxPb: 0, minVolumeRatio: 1.5, minMainFlowYi: .2, sort: "volumeRatio", direction: "desc" } },
+    { name: "稳健低估", note: "PE≤25、PB≤3、市值≥100亿", filters: { minChange: -3, maxChange: 5, minTurnover: .3, minAmountYi: 1, minCapYi: 100, maxPe: 25, maxPb: 3, minVolumeRatio: 0, minMainFlowYi: -99999, sort: "marketCap", direction: "desc" } },
+    { name: "资金关注", note: "主力净流入≥1亿、成交额≥5亿", filters: { minChange: -5, maxChange: 9.8, minTurnover: 1, minAmountYi: 5, minCapYi: 30, maxPe: 0, maxPb: 0, minVolumeRatio: 0, minMainFlowYi: 1, sort: "mainNetInflow", direction: "desc" } },
+    { name: "活跃中小盘", note: "市值≥30亿、换手≥5%", filters: { minChange: -3, maxChange: 9.8, minTurnover: 5, minAmountYi: 1, minCapYi: 30, maxPe: 80, maxPb: 0, minVolumeRatio: 1, minMainFlowYi: -99999, sort: "turnover", direction: "desc" } },
+  ];
+  const saveScreener = () => { const name = screenerName.trim(); if (!name) return; const next = [{ id: `screen-${Date.now()}`, name, filters: { ...screenerFilters }, createdAt: new Date().toISOString() }, ...savedScreeners.filter((item) => item.name !== name)].slice(0, 20); setSavedScreeners(next); localStorage.setItem("wealth-saved-screeners-v1", JSON.stringify(next)); setScreenerName(""); };
+  const removeScreener = (id: string) => { const next = savedScreeners.filter((item) => item.id !== id); setSavedScreeners(next); localStorage.setItem("wealth-saved-screeners-v1", JSON.stringify(next)); };
   const refreshTradePlans = async () => {
     if (!planCodes.length) { setTradePlans([]); return; }
     setPlansLoading(true); setPlansError("");
@@ -1003,11 +1017,11 @@ export default function Home() {
     if (!authUser || !userDataReady) return;
     setCloudSaveState("saving");
     const timer = setTimeout(() => {
-      const data = { watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, planStatuses: planStatusRef.current, simulator: { cash: simCash, positions: simPositions, orders: simOrders }, aiAnalyses, profile, preferences: { selected, klt, chartMode, lesson } };
+      const data = { watchGroups, watchMeta, holdings, alerts, alertSettings, savedScreeners, planEvents, planStatuses: planStatusRef.current, simulator: { cash: simCash, positions: simPositions, orders: simOrders }, aiAnalyses, profile, preferences: { selected, klt, chartMode, lesson } };
       fetch("/api/user-data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) }).then((response) => { if (!response.ok) throw new Error("保存失败"); setCloudSaveState("saved"); }).catch(() => setCloudSaveState("error"));
     }, 650);
     return () => clearTimeout(timer);
-  }, [authUser, userDataReady, watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, simCash, simPositions, simOrders, aiAnalyses, profile, selected, klt, chartMode, lesson]);
+  }, [authUser, userDataReady, watchGroups, watchMeta, holdings, alerts, alertSettings, savedScreeners, planEvents, simCash, simPositions, simOrders, aiAnalyses, profile, selected, klt, chartMode, lesson]);
   useEffect(() => {
     simOrders.filter((order) => order.status === "pending").forEach((order) => { const quote = map[order.code]; if (!quote) return; const crosses = order.side === "buy" ? order.price >= quote.price : order.price <= quote.price; if (crosses) fillSimOrder(order, quote.price); });
   }, [quotes]);
@@ -1371,8 +1385,9 @@ export default function Home() {
         {tab === "screener" && (
           <>
             <div className="screener-head"><div><span className="eyebrow">QUANT SCREENING</span><h1>全市场指标筛选</h1><p>从沪深京A股真实行情中组合筛选候选，不使用演示数据；结果是研究线索，不构成买入建议。</p></div><button onClick={() => refreshScreener(1)}>{screenerLoading ? "筛选中" : "运行筛选"}</button></div>
+            <section className="screener-presets"><div>{screenerPresets.map((preset) => <button key={preset.name} onClick={() => { setScreenerFilters(preset.filters); refreshScreener(1, preset.filters); }}><b>{preset.name}</b><small>{preset.note}</small></button>)}</div><aside><div><input value={screenerName} onChange={(event) => setScreenerName(event.target.value)} placeholder="命名当前方案" onKeyDown={(event) => { if (event.key === 'Enter') saveScreener(); }}/><button onClick={saveScreener}>保存方案</button></div>{savedScreeners.length ? <ul>{savedScreeners.map((item) => <li key={item.id}><button onClick={() => { setScreenerFilters(item.filters); refreshScreener(1, item.filters); }}>{item.name}</button><span onClick={() => removeScreener(item.id)} role="button" tabIndex={0}>×</span></li>)}</ul> : <small>最多保存20个个人方案，并随账号同步。</small>}</aside></section>
             <section className="panel screener-filters">
-              {([['minChange','最小涨幅','%'],['maxChange','最大涨幅','%'],['minTurnover','最低换手','%'],['minAmountYi','最低成交额','亿元'],['minCapYi','最低总市值','亿元'],['maxPe','最高PE','0=不限']] as const).map(([key,label,unit]) => <label key={key}><span>{label}</span><div><input type="number" step="0.1" value={screenerFilters[key]} onChange={(event) => setScreenerFilters((current) => ({...current,[key]:Number(event.target.value)}))}/><em>{unit}</em></div></label>)}
+              {([['minChange','最小涨幅','%'],['maxChange','最大涨幅','%'],['minTurnover','最低换手','%'],['minAmountYi','最低成交额','亿元'],['minCapYi','最低总市值','亿元'],['maxPe','最高PE','0=不限'],['maxPb','最高PB','0=不限'],['minVolumeRatio','最低量比','倍'],['minMainFlowYi','最低主力净流','亿元']] as const).map(([key,label,unit]) => <label key={key}><span>{label}</span><div><input type="number" step="0.1" value={screenerFilters[key]} onChange={(event) => setScreenerFilters((current) => ({...current,[key]:Number(event.target.value)}))}/><em>{unit}</em></div></label>)}
               <label><span>排序指标</span><select value={screenerFilters.sort} onChange={(event) => setScreenerFilters((current) => ({...current,sort:event.target.value as ScreenerFilters['sort']}))}><option value="changePct">涨跌幅</option><option value="amount">成交额</option><option value="turnover">换手率</option><option value="marketCap">总市值</option><option value="mainNetInflow">主力净流入</option><option value="volumeRatio">量比</option></select></label>
               <label><span>排序方向</span><select value={screenerFilters.direction} onChange={(event) => setScreenerFilters((current) => ({...current,direction:event.target.value as ScreenerFilters['direction']}))}><option value="desc">从高到低</option><option value="asc">从低到高</option></select></label>
               <button className="primary" onClick={() => refreshScreener(1)} disabled={screenerLoading}>{screenerLoading ? "正在读取全市场" : "应用条件"}</button>
