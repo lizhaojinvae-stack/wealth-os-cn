@@ -41,6 +41,12 @@ copy .env.example .env.local
 npm run dev
 ```
 
+停止本地开发服务：
+
+```bash
+npm run stop
+```
+
 浏览器访问 `http://localhost:3000/`。macOS/Linux 使用 `cp .env.example .env.local`。
 
 ## DeepSeek 配置
