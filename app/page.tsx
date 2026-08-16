@@ -20,6 +20,42 @@ type Quote = {
   marketCap: number;
   floatMarketCap: number;
   mainNetInflow: number;
+  volumeRatio: number;
+};
+type AlertLevel = "critical" | "warning" | "info";
+type MarketAlert = {
+  id: string;
+  code: string;
+  name: string;
+  level: AlertLevel;
+  rule: string;
+  title: string;
+  detail: string;
+  value: number;
+  threshold: number;
+  direction: "bull" | "bear" | "neutral";
+  createdAt: string;
+  read: boolean;
+};
+type AlertSettings = {
+  enabled: boolean;
+  changePct: number;
+  instantMovePct: number;
+  volumeRatio: number;
+  turnover: number;
+  mainFlowYi: number;
+  holdingReturnPct: number;
+  cooldownMinutes: number;
+};
+const DEFAULT_ALERT_SETTINGS: AlertSettings = {
+  enabled: true,
+  changePct: 3,
+  instantMovePct: 0.8,
+  volumeRatio: 2,
+  turnover: 10,
+  mainFlowYi: 1,
+  holdingReturnPct: 8,
+  cooldownMinutes: 30,
 };
 type Bar = {
   date: string;
@@ -450,11 +486,16 @@ export default function Home() {
     [holdings, setHoldings] = useState<
       { code: string; shares: number; cost: number }[]
     >([]),
+    [alerts, setAlerts] = useState<MarketAlert[]>([]),
+    [alertSettings, setAlertSettings] = useState<AlertSettings>(DEFAULT_ALERT_SETTINGS),
+    [alertFilter, setAlertFilter] = useState<"all" | AlertLevel>("all"),
+    [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default"),
     [learnQ, setLearnQ] = useState(""),
     [lesson, setLesson] = useState(0),
     [principal, setPrincipal] = useState(100000),
     [rate, setRate] = useState(8),
     [years, setYears] = useState(10);
+  const quoteHistoryRef = useRef<Record<string, { price: number; at: number }>>({});
   useEffect(() => {
     try {
       const oldWatch =
@@ -471,6 +512,12 @@ export default function Home() {
       setWatch(Array.from(new Set(groups.flatMap((g: { codes: string[] }) => g.codes))));
       setWatchMeta(JSON.parse(localStorage.getItem("wealth-watch-meta-v1") || "{}"));
       setHoldings(JSON.parse(localStorage.getItem("wealth-holdings") || "[]"));
+      setAlerts(JSON.parse(localStorage.getItem("wealth-alerts-v1") || "[]"));
+      setAlertSettings({
+        ...DEFAULT_ALERT_SETTINGS,
+        ...JSON.parse(localStorage.getItem("wealth-alert-settings-v1") || "{}"),
+      });
+      if ("Notification" in window) setNotificationPermission(Notification.permission);
     } catch {}
   }, []);
   const codes = useMemo(
@@ -640,6 +687,83 @@ export default function Home() {
     });
     return m;
   }, [quotes]);
+  useEffect(() => {
+    if (!alertSettings.enabled || !quotes.length) return;
+    const now = Date.now();
+    const tracked = new Set([...watch, ...holdings.map((h) => h.code)]);
+    const cooldownKey = "wealth-alert-cooldowns-v1";
+    let cooldowns: Record<string, number> = {};
+    try { cooldowns = JSON.parse(localStorage.getItem(cooldownKey) || "{}"); } catch {}
+    const candidates: Omit<MarketAlert, "id" | "createdAt" | "read">[] = [];
+    const add = (quote: Quote, rule: string, level: AlertLevel, title: string, detail: string, value: number, threshold: number, direction: MarketAlert["direction"]) => {
+      const key = `${quote.code}:${rule}:${direction}`;
+      if (now - (cooldowns[key] || 0) < alertSettings.cooldownMinutes * 60000) return;
+      cooldowns[key] = now;
+      candidates.push({ code: quote.code, name: quote.name, rule, level, title, detail, value, threshold, direction });
+    };
+    quotes.filter((quote) => tracked.has(quote.code)).forEach((quote) => {
+      if (Math.abs(quote.changePct) >= alertSettings.changePct) {
+        add(quote, "day-change", Math.abs(quote.changePct) >= 7 ? "critical" : "warning", `${quote.changePct >= 0 ? "快速上涨" : "快速下跌"} ${Math.abs(quote.changePct).toFixed(2)}%`, `当日涨跌幅越过 ±${alertSettings.changePct}% 阈值，需结合公告、板块和量能核验。`, quote.changePct, alertSettings.changePct, quote.changePct >= 0 ? "bull" : "bear");
+      }
+      const previous = quoteHistoryRef.current[quote.code];
+      if (previous?.price > 0 && now - previous.at <= 20000) {
+        const move = ((quote.price - previous.price) / previous.price) * 100;
+        if (Math.abs(move) >= alertSettings.instantMovePct) {
+          add(quote, "instant-move", "critical", `短时异动 ${move >= 0 ? "+" : ""}${move.toFixed(2)}%`, `相邻行情快照出现明显位移；可能来自快速成交、复牌或数据跳变，需查看盘口确认。`, move, alertSettings.instantMovePct, move >= 0 ? "bull" : "bear");
+        }
+      }
+      if (Number.isFinite(quote.volumeRatio) && quote.volumeRatio >= alertSettings.volumeRatio) {
+        add(quote, "volume-ratio", "warning", `量比放大至 ${quote.volumeRatio.toFixed(2)}`, `当前量比超过 ${alertSettings.volumeRatio}，表示成交节奏显著高于近期同期水平。`, quote.volumeRatio, alertSettings.volumeRatio, quote.changePct >= 0 ? "bull" : "bear");
+      }
+      if (Number.isFinite(quote.turnover) && quote.turnover >= alertSettings.turnover) {
+        add(quote, "turnover", "warning", `异常换手 ${quote.turnover.toFixed(2)}%`, `换手率超过 ${alertSettings.turnover}%，筹码交换活跃，方向需结合价格位置判断。`, quote.turnover, alertSettings.turnover, quote.changePct >= 0 ? "bull" : "bear");
+      }
+      const flowYi = quote.mainNetInflow / 100000000;
+      if (Number.isFinite(flowYi) && Math.abs(flowYi) >= alertSettings.mainFlowYi) {
+        add(quote, "main-flow", Math.abs(flowYi) >= alertSettings.mainFlowYi * 3 ? "critical" : "warning", `${flowYi >= 0 ? "主力资金净流入" : "主力资金净流出"} ${Math.abs(flowYi).toFixed(2)}亿`, `主力净流额越过 ±${alertSettings.mainFlowYi}亿元；资金口径仅作线索，不等于真实机构买卖。`, flowYi, alertSettings.mainFlowYi, flowYi >= 0 ? "bull" : "bear");
+      }
+      const holding = holdings.find((item) => item.code === quote.code);
+      if (holding && holding.cost > 0) {
+        const holdingReturn = ((quote.price - holding.cost) / holding.cost) * 100;
+        if (Math.abs(holdingReturn) >= alertSettings.holdingReturnPct) {
+          add(quote, "holding-return", holdingReturn <= -alertSettings.holdingReturnPct ? "critical" : "info", `持仓浮动${holdingReturn >= 0 ? "盈利" : "亏损"} ${Math.abs(holdingReturn).toFixed(2)}%`, `相对录入成本 ${holding.cost.toFixed(2)} 元已越过 ±${alertSettings.holdingReturnPct}% 提醒线。`, holdingReturn, alertSettings.holdingReturnPct, holdingReturn >= 0 ? "bull" : "bear");
+        }
+      }
+      quoteHistoryRef.current[quote.code] = { price: quote.price, at: now };
+    });
+    if (!candidates.length) return;
+    const created = candidates.map((item, index) => ({ ...item, id: `${now}-${index}-${item.code}-${item.rule}`, createdAt: new Date(now).toISOString(), read: false }));
+    setAlerts((current) => {
+      const next = [...created, ...current].slice(0, 200);
+      localStorage.setItem("wealth-alerts-v1", JSON.stringify(next));
+      return next;
+    });
+    localStorage.setItem(cooldownKey, JSON.stringify(cooldowns));
+    const urgent = created.find((item) => item.level === "critical");
+    if (urgent && "Notification" in window && Notification.permission === "granted") {
+      new Notification(`WEALTH OS · ${urgent.name}`, { body: `${urgent.title}：${urgent.detail}` });
+    }
+  }, [quotes, watch, holdings, alertSettings]);
+  const saveAlertSettings = (next: AlertSettings) => {
+    setAlertSettings(next);
+    localStorage.setItem("wealth-alert-settings-v1", JSON.stringify(next));
+  };
+  const markAllAlertsRead = () => setAlerts((current) => {
+    const next = current.map((item) => ({ ...item, read: true }));
+    localStorage.setItem("wealth-alerts-v1", JSON.stringify(next));
+    return next;
+  });
+  const clearAlerts = () => {
+    setAlerts([]);
+    localStorage.removeItem("wealth-alerts-v1");
+  };
+  const requestNotifications = async () => {
+    if (!("Notification" in window)) return;
+    const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
+  };
+  const unreadAlerts = alerts.filter((item) => !item.read).length;
+  const visibleAlerts = alerts.filter((item) => alertFilter === "all" || item.level === alertFilter);
   useEffect(() => {
     if (!watch.length) return;
     let changed=false;
@@ -867,6 +991,7 @@ export default function Home() {
             ["market", "市场"],
             ["watch", "自选"],
             ["portfolio", "持仓"],
+            ["alerts", `预警${unreadAlerts ? ` ${unreadAlerts}` : ""}`],
             ["strategy", "策略"],
             ["learn", "学习"],
           ].map((x) => (
@@ -1445,6 +1570,57 @@ export default function Home() {
                 )}
               </div>
             )}
+          </>
+        )}
+        {tab === "alerts" && (
+          <>
+            <div className="alert-hero">
+              <div>
+                <span className="eyebrow">REAL-TIME SIGNAL ENGINE</span>
+                <h1>智能预警中心</h1>
+                <p>监控全部自选股与持仓股。规则在本地浏览器执行，依据真实行情快照生成可复核事件，不预测收益。</p>
+              </div>
+              <div className="alert-hero-actions">
+                <button onClick={markAllAlertsRead}>全部已读</button>
+                <button onClick={clearAlerts}>清空记录</button>
+                <button className="primary" onClick={requestNotifications} disabled={notificationPermission === "granted"}>
+                  {notificationPermission === "granted" ? "桌面通知已开启" : "开启桌面通知"}
+                </button>
+              </div>
+            </div>
+            <div className="alert-summary">
+              <article><small>监控标的</small><b>{new Set([...watch, ...holdings.map((h) => h.code)]).size}</b></article>
+              <article><small>未读事件</small><b>{unreadAlerts}</b></article>
+              <article><small>高优先级</small><b className="up">{alerts.filter((a) => a.level === "critical").length}</b></article>
+              <article><small>引擎状态</small><b className={alertSettings.enabled ? "engine-on" : "down"}>{alertSettings.enabled ? "运行中" : "已暂停"}</b></article>
+            </div>
+            <section className="panel alert-settings">
+              <div className="section-head">
+                <div><small>规则阈值</small><h2>监控参数</h2></div>
+                <label className="engine-switch"><input type="checkbox" checked={alertSettings.enabled} onChange={(e) => saveAlertSettings({ ...alertSettings, enabled: e.target.checked })}/><span>{alertSettings.enabled ? "实时监控" : "暂停监控"}</span></label>
+              </div>
+              <div className="alert-setting-grid">
+                {([
+                  ["changePct", "当日涨跌幅", "%"], ["instantMovePct", "短时价格位移", "%"], ["volumeRatio", "量比", "倍"],
+                  ["turnover", "换手率", "%"], ["mainFlowYi", "主力净流额", "亿元"], ["holdingReturnPct", "持仓盈亏", "%"], ["cooldownMinutes", "同类冷却", "分钟"],
+                ] as const).map(([key, label, unit]) => <label key={key}><span>{label}</span><div><input type="number" min="0.1" step="0.1" value={alertSettings[key]} onChange={(e) => saveAlertSettings({ ...alertSettings, [key]: Math.max(0.1, Number(e.target.value) || 0.1) })}/><em>{unit}</em></div></label>)}
+              </div>
+            </section>
+            <div className="alert-toolbar">
+              <div>{(["all", "critical", "warning", "info"] as const).map((level) => <button key={level} className={alertFilter === level ? "active" : ""} onClick={() => setAlertFilter(level)}>{level === "all" ? "全部" : level === "critical" ? "重大" : level === "warning" ? "关注" : "提示"}</button>)}</div>
+              <small>最多保留最近 200 条 · 同类事件按冷却时间去重</small>
+            </div>
+            <section className="alert-feed">
+              {visibleAlerts.map((item) => <article key={item.id} role="button" tabIndex={0} className={`alert-item ${item.level} ${item.read ? "read" : ""}`} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }} onClick={() => {
+                const next = alerts.map((alert) => alert.id === item.id ? { ...alert, read: true } : alert);
+                setAlerts(next); localStorage.setItem("wealth-alerts-v1", JSON.stringify(next)); setSelected(item.code);
+              }}>
+                <div className="alert-rank">{item.level === "critical" ? "重大" : item.level === "warning" ? "关注" : "提示"}</div>
+                <div className="alert-copy"><div><b>{item.name}</b><small>{item.code} · {new Date(item.createdAt).toLocaleString("zh-CN")}</small></div><h3 className={item.direction}>{item.title}</h3><p>{item.detail}</p></div>
+                <button onClick={(e) => { e.stopPropagation(); setSelected(item.code); setTab("market"); }}>查看行情</button>
+              </article>)}
+              {!visibleAlerts.length && <div className="empty alert-empty"><b>暂时没有符合阈值的异常事件</b><span>系统会继续监测自选和持仓，触发后自动记录在这里。</span></div>}
+            </section>
           </>
         )}
         {tab === "strategy" && (
