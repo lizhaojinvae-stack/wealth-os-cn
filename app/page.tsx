@@ -870,9 +870,9 @@ export default function Home() {
         .then((j) => { if(active && String(j.code||"") === selected.replace(/\D/g, "").slice(-6)) setDetail(j.ok ? j : null) })
         .catch(() => {});
     updateDepth();
-    const timer = setInterval(updateDepth, 5000);
+    const timer = setInterval(updateDepth, Math.max(3, profile.refreshSeconds || 5) * 1000);
     return () => { active = false; clearInterval(timer) };
-  }, [selected]);
+  }, [selected, profile.refreshSeconds]);
   useEffect(() => {
     if (!watch.length) return;
     const storageKey="wealth-watch-performance-v1";
@@ -1339,7 +1339,7 @@ export default function Home() {
       <section className="page realapp">
         {tab !== "learn" && (
           <div className="sourcebar">
-            <b>数据口径</b> 东方财富 push2 / push2his · 行情与盘口约5秒刷新 ·
+            <b>数据口径</b> 东方财富 push2 / push2his · 行情与盘口约{Math.max(3, profile.refreshSeconds || 5)}秒刷新 ·
             K线前复权 · <span>最后成功 {stamp || "-"}</span>
           </div>
         )}
@@ -1417,7 +1417,7 @@ export default function Home() {
                 {simMessage && <p className="sim-message">{simMessage}</p>}
               </section>
               <section className="panel sim-quote">
-                <small>实时行情 · 约5秒刷新</small><h2>{simQuote?.name || "请选择证券"} <em>{simQuote?.code || ""}</em></h2>
+                <small>实时行情 · 约{Math.max(3, profile.refreshSeconds || 5)}秒刷新</small><h2>{simQuote?.name || "请选择证券"} <em>{simQuote?.code || ""}</em></h2>
                 <div className="sim-last"><b>{simQuote?.price?.toFixed(2) || "—"}</b><span className={(simQuote?.changePct || 0) >= 0 ? "up" : "down"}>{simQuote ? pct(simQuote.changePct) : "—"}</span></div>
                 <div className="sim-quote-grid"><div><small>今开</small><b>{Number.isFinite(simQuote?.open) ? Number(simQuote?.open).toFixed(2) : "—"}</b></div><div><small>最高</small><b>{Number.isFinite(simQuote?.high) ? Number(simQuote?.high).toFixed(2) : "—"}</b></div><div><small>最低</small><b>{Number.isFinite(simQuote?.low) ? Number(simQuote?.low).toFixed(2) : "—"}</b></div><div><small>换手率</small><b>{Number.isFinite(simQuote?.turnover) ? `${Number(simQuote?.turnover).toFixed(2)}%` : "—"}</b></div></div>
                 <div className="sim-rules"><b>模拟撮合规则</b><p>市价委托按当前最新价模拟成交；限价买单在最新价不高于委托价时成交，限价卖单反之。买入100股整数手，卖出执行T+1可用数量约束。</p><small>这是学习型近似撮合，不模拟排队、部分成交、涨跌停封单、停牌及真实券商延迟。</small></div>
