@@ -51,6 +51,66 @@ export async function GET(request: Request) {
       const industryStats = Array.from(limitUp.reduce((map, row) => { const hit = map.get(row.industry) || { name: row.industry, count: 0, maxStreak: 0, sealedAmount: 0 }; hit.count += 1; hit.maxStreak = Math.max(hit.maxStreak, row.streak); hit.sealedAmount += row.sealedAmount; map.set(row.industry, hit); return map; }, new Map<string, { name: string; count: number; maxStreak: number; sealedAmount: number }>()).values()).sort((a, b) => b.count - a.count || b.maxStreak - a.maxStreak).slice(0, 15);
       return Response.json({ ok: true, source: "东方财富板块行情 / 涨停池", fetchedAt: new Date().toISOString(), tradingDate: String(limitJson.data?.qdate || ""), methodology: { formula: "热度=涨幅动量35%+上涨宽度25%+主力净流25%+换手活跃15%", note: "分数用于同批板块相对比较，不代表收益预测。" }, boards: { industry: normalizeBoards(industryRows, "industry"), concept: normalizeBoards(conceptRows, "concept") }, limitUp: { total: limitJson.data?.tc || limitUp.length, stocks: limitUp, ladder, industries: industryStats } });
     }
+    if (type === "plans") {
+      const codes = Array.from(new Set((url.searchParams.get("codes") || "").split(",").map((value) => value.replace(/\D/g, "").slice(-6)).filter((value) => /^\d{6}$/.test(value)))).slice(0, 20);
+      if (!codes.length) return Response.json({ ok: true, plans: [] });
+      const quoteCodes = [...codes, "1.000001", "0.399001", "0.399006"];
+      const quoteUrl = `${EM_QUOTE}?fltt=2&secids=${quoteCodes.map(secid).join(",")}&fields=f2,f3,f4,f5,f6,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f62`;
+      const quoteJson = JSON.parse(await fetchText(quoteUrl, headers)) as { data?: { diff?: Record<string, number | string>[] } };
+      const quoteRows = quoteJson.data?.diff || [];
+      const quoteMap = new Map(quoteRows.map((row) => [String(row.f12), row]));
+      const marketChanges = ["000001", "399001", "399006"].map((code) => Number(quoteMap.get(code)?.f3)).filter(Number.isFinite);
+      const marketChange = marketChanges.length ? marketChanges.reduce((sum, value) => sum + value, 0) / marketChanges.length : 0;
+      const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, value));
+      const marketScore = +clamp(((marketChange + 2) / 4) * 15, 0, 15).toFixed(1);
+      type PlanBar = { date: string; open: number; close: number; high: number; low: number; volume: number; amount: number; turnover: number };
+      const plans: Record<string, unknown>[] = [];
+      for (let start = 0; start < codes.length; start += 5) {
+        await Promise.all(codes.slice(start, start + 5).map(async (code) => {
+          try {
+            const quote = quoteMap.get(code); if (!quote) return;
+            let bars: PlanBar[] = [];
+            try {
+              const body = await fetchText(`${EM_KLINE}?secid=${secid(code)}&klt=101&fqt=1&beg=0&end=20500101&lmt=150&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`, headers);
+              const klineJson = JSON.parse(body) as { data?: { klines?: string[] } };
+              bars = (klineJson.data?.klines || []).map((line) => { const row = line.split(","); return { date: row[0], open: +row[1], close: +row[2], high: +row[3], low: +row[4], volume: +row[5], amount: +row[6], turnover: +row[10] }; }).filter((bar) => Number.isFinite(bar.close));
+            } catch {}
+            if (bars.length < 120) {
+              const symbol = txSymbol(code), txBody = await fetchText(`http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,150,qfq`, headers);
+              const txJson = JSON.parse(txBody) as { data?: Record<string, Record<string, string[][]>> }, node = txJson.data?.[symbol] || {};
+              bars = (node.qfqday || node.day || []).map((row) => ({ date: row[0], open: +row[1], close: +row[2], high: +row[3], low: +row[4], volume: +row[5], amount: 0, turnover: 0 })).filter((bar) => Number.isFinite(bar.close));
+            }
+            if (bars.length < 120) { plans.push({ code, name: String(quote.f14 || code), status: "insufficient", statusLabel: "数据不足", score: null, asOf: bars.at(-1)?.date || null, reasons: [`仅取得${bars.length}个交易日样本，低于120日最低口径。`] }); return; }
+            const closes = bars.map((bar) => bar.close), ma = (days: number) => closes.slice(-days).reduce((sum, value) => sum + value, 0) / days;
+            const ma5 = ma(5), ma10 = ma(10), ma20 = ma(20), ma60 = ma(60), ma120 = ma(120);
+            const latest = bars.at(-1)!, previousBars = bars.slice(0, -1), high20 = Math.max(...previousBars.slice(-20).map((bar) => bar.high)), low20 = Math.min(...previousBars.slice(-20).map((bar) => bar.low)), high60 = Math.max(...previousBars.slice(-60).map((bar) => bar.high)), high120 = Math.max(...previousBars.slice(-120).map((bar) => bar.high));
+            const avgVolume20 = previousBars.slice(-20).reduce((sum, bar) => sum + bar.volume, 0) / 20, volumeRatio = avgVolume20 ? latest.volume / avgVolume20 : 0;
+            const trueRanges = bars.slice(-15).map((bar, index, subset) => index === 0 ? bar.high - bar.low : Math.max(bar.high - bar.low, Math.abs(bar.high - subset[index - 1].close), Math.abs(bar.low - subset[index - 1].close)));
+            const atr14 = trueRanges.slice(-14).reduce((sum, value) => sum + value, 0) / 14;
+            const price = Number(quote.f2) || latest.close, changePct = Number(quote.f3) || 0, turnover = Number(quote.f8) || latest.turnover || 0, amount = Number(quote.f6) || latest.amount || 0;
+            const entryTrigger = +(high20 * 1.002).toFixed(2), invalidPrice = +(Math.max(low20, Math.min(ma20, ma60)) * .995).toFixed(2), pressure = +(Math.max(high60, high120) * .998).toFixed(2);
+            const riskReward = entryTrigger > invalidPrice && pressure > entryTrigger ? +((pressure - entryTrigger) / (entryTrigger - invalidPrice)).toFixed(2) : null;
+            const components = {
+              market: marketScore,
+              midTrend: +(Number(price > ma20) * 8 + Number(ma20 > ma60) * 7 + Number(ma60 > ma120) * 5).toFixed(1),
+              shortStructure: +(Number(price > ma5) * 5 + Number(ma5 > ma10) * 5 + Number(price >= high20 * .97) * 5).toFixed(1),
+              volumePrice: +(clamp(volumeRatio / 1.8 * 12, 0, 12) + clamp(turnover / 8 * 4, 0, 4) + clamp(amount / 800000000 * 4, 0, 4)).toFixed(1),
+              momentum: +(clamp((changePct + 3) / 9 * 8, 0, 8) + (price >= ma20 && price <= ma20 * 1.12 ? 7 : price > ma20 ? 3 : 0)).toFixed(1),
+              riskLiquidity: +(clamp(amount / 500000000 * 6, 0, 6) + (atr14 / price >= .015 && atr14 / price <= .06 ? 4 : 2) + (riskReward !== null && riskReward >= 1.5 ? 5 : riskReward !== null && riskReward >= 1 ? 3 : 0)).toFixed(1),
+            };
+            const score = +Object.values(components).reduce((sum, value) => sum + value, 0).toFixed(1);
+            const confirmed = price >= entryTrigger && volumeRatio >= 1.2 && ma20 > ma60;
+            const invalid = price < invalidPrice || ma20 < ma60 * .97;
+            const status = invalid ? "invalid" : confirmed ? "confirmed" : score >= 65 ? "watch" : "neutral";
+            const statusLabel = invalid ? "结构失效" : confirmed ? "条件确认" : score >= 65 ? "重点观察" : "普通观察";
+            const reasons = [price > ma20 ? "价格位于MA20上方" : "价格尚未站上MA20", ma20 > ma60 ? "MA20高于MA60" : "MA20尚未高于MA60", volumeRatio >= 1.2 ? `成交量为20日均量${volumeRatio.toFixed(2)}倍` : `量能仅为20日均量${volumeRatio.toFixed(2)}倍`, riskReward === null ? "上方历史压力不足以形成有效风险收益测算" : `第一压力对应风险收益比约${riskReward}`];
+            plans.push({ code, name: String(quote.f14 || code), price, changePct, turnover, amount, status, statusLabel, score, asOf: latest.date, adjustment: "前复权", sampleSize: bars.length, marketChange: +marketChange.toFixed(2), components, indicators: { ma5: +ma5.toFixed(2), ma10: +ma10.toFixed(2), ma20: +ma20.toFixed(2), ma60: +ma60.toFixed(2), ma120: +ma120.toFixed(2), volumeRatio: +volumeRatio.toFixed(2), atr14: +atr14.toFixed(2) }, levels: { entryTrigger, pullbackLow: +(ma20 * .99).toFixed(2), pullbackHigh: +(ma20 * 1.01).toFixed(2), invalidPrice, pressure, riskReward }, rules: { confirm: `价格不低于${entryTrigger}且量能达到20日均量1.2倍，同时MA20高于MA60`, pullback: `回踩${(ma20 * .99).toFixed(2)}—${(ma20 * 1.01).toFixed(2)}区间后企稳，仍需量价确认`, invalid: `跌破${invalidPrice}或MA20相对MA60明显转弱` }, reasons });
+          } catch (planError) { plans.push({ code, name: String(quoteMap.get(code)?.f14 || code), status: "insufficient", statusLabel: "数据不足", score: null, reasons: [planError instanceof Error ? planError.message : "K线数据不可用"] }); }
+        }));
+      }
+      plans.sort((a, b) => Number(b.score || -1) - Number(a.score || -1));
+      return Response.json({ ok: true, source: "东方财富实时行情 / 前复权日线", fetchedAt: new Date().toISOString(), methodology: { score: "市场15 + 中期趋势20 + 短期结构15 + 量价20 + 动量15 + 风险收益与流动性15", confirmation: "盘中越过触发位只称条件确认，收盘有效性需下一交易日复核。" }, plans });
+    }
     if (type === "search") {
       const q = (url.searchParams.get("q") || "").trim().slice(0, 30);
       if (!q) return Response.json({ ok: true, results: [] });

@@ -50,6 +50,8 @@ type AlertSettings = {
 type RadarBoard = { kind: "industry" | "concept"; code: string; name: string; changePct: number; turnover: number; marketCap: number; mainNetInflow: number; upCount: number; downCount: number; leaderName: string; leaderCode: string; leaderChangePct: number; heatScore: number; components: { momentum: number; breadth: number; flow: number; activity: number } };
 type LimitUpStock = { code: string; market: number; name: string; price: number; changePct: number; amount: number; floatMarketCap: number; marketCap: number; turnover: number; streak: number; firstSealTime: string; lastSealTime: string; sealedAmount: number; openCount: number; industry: string; streakDays: number };
 type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
+type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
+type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -498,12 +500,19 @@ export default function Home() {
     [radarError, setRadarError] = useState(""),
     [radarBoardKind, setRadarBoardKind] = useState<"industry" | "concept">("concept"),
     [radarView, setRadarView] = useState<"boards" | "ladder">("boards"),
+    [tradePlans, setTradePlans] = useState<TradePlan[]>([]),
+    [planEvents, setPlanEvents] = useState<PlanEvent[]>([]),
+    [plansLoading, setPlansLoading] = useState(false),
+    [plansError, setPlansError] = useState(""),
+    [plansUpdatedAt, setPlansUpdatedAt] = useState(""),
+    [planFilter, setPlanFilter] = useState<"all" | TradePlan["status"]>("all"),
     [learnQ, setLearnQ] = useState(""),
     [lesson, setLesson] = useState(0),
     [principal, setPrincipal] = useState(100000),
     [rate, setRate] = useState(8),
     [years, setYears] = useState(10);
   const quoteHistoryRef = useRef<Record<string, { price: number; at: number }>>({});
+  const planStatusRef = useRef<Record<string, string>>({});
   useEffect(() => {
     try {
       const oldWatch =
@@ -526,6 +535,8 @@ export default function Home() {
         ...JSON.parse(localStorage.getItem("wealth-alert-settings-v1") || "{}"),
       });
       if ("Notification" in window) setNotificationPermission(Notification.permission);
+      setPlanEvents(JSON.parse(localStorage.getItem("wealth-plan-events-v1") || "[]"));
+      planStatusRef.current = JSON.parse(localStorage.getItem("wealth-plan-status-v1") || "{}");
     } catch {}
   }, []);
   const codes = useMemo(
@@ -540,6 +551,7 @@ export default function Home() {
       ),
     [watch, holdings, selected],
   );
+  const planCodes = useMemo(() => Array.from(new Set([...watch, ...holdings.map((holding) => holding.code)])).slice(0, 20), [watch, holdings]);
   const refresh = async () => {
     setLoading(true);
     setError("");
@@ -570,6 +582,31 @@ export default function Home() {
       try { const cached = JSON.parse(localStorage.getItem("wealth-radar-cache-v1") || "null"); if (cached) setRadar(cached); } catch {}
     } finally { setRadarLoading(false); }
   };
+  const refreshTradePlans = async () => {
+    if (!planCodes.length) { setTradePlans([]); return; }
+    setPlansLoading(true); setPlansError("");
+    try {
+      const response = await fetch(`/api/market?type=plans&codes=${planCodes.join(",")}`, { cache: "no-store" });
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || "交易计划请求失败");
+      const nextPlans = (json.plans || []) as TradePlan[];
+      const nextStatuses = { ...planStatusRef.current };
+      const events: PlanEvent[] = [];
+      nextPlans.forEach((plan) => {
+        const previous = planStatusRef.current[plan.code];
+        if (previous && previous !== plan.status) events.push({ id: `${Date.now()}-${plan.code}-${plan.status}`, code: plan.code, name: plan.name, from: previous, to: plan.status, createdAt: new Date().toISOString(), price: plan.price });
+        nextStatuses[plan.code] = plan.status;
+      });
+      planStatusRef.current = nextStatuses;
+      localStorage.setItem("wealth-plan-status-v1", JSON.stringify(nextStatuses));
+      if (events.length) setPlanEvents((current) => { const next = [...events, ...current].slice(0, 100); localStorage.setItem("wealth-plan-events-v1", JSON.stringify(next)); return next; });
+      setTradePlans(nextPlans); setPlansUpdatedAt(json.fetchedAt || new Date().toISOString());
+      localStorage.setItem("wealth-plans-cache-v1", JSON.stringify({ plans: nextPlans, fetchedAt: json.fetchedAt }));
+    } catch (planFailure) {
+      setPlansError(planFailure instanceof Error ? planFailure.message : "交易计划请求失败");
+      try { const cached = JSON.parse(localStorage.getItem("wealth-plans-cache-v1") || "null"); if (cached?.plans) { setTradePlans(cached.plans); setPlansUpdatedAt(cached.fetchedAt || ""); } } catch {}
+    } finally { setPlansLoading(false); }
+  };
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 5000);
@@ -580,6 +617,11 @@ export default function Home() {
     const timer = setInterval(refreshRadar, 60000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    refreshTradePlans();
+    const timer = setInterval(refreshTradePlans, 30000);
+    return () => clearInterval(timer);
+  }, [planCodes.join(",")]);
   useEffect(() => {
     let active = true;
     const cacheKey = `${selected}:${klt}:qfq`;
@@ -1016,6 +1058,7 @@ export default function Home() {
           {[
             ["market", "市场"],
             ["radar", "雷达"],
+            ["plans", "计划"],
             ["watch", "自选"],
             ["portfolio", "持仓"],
             ["alerts", `预警${unreadAlerts ? ` ${unreadAlerts}` : ""}`],
@@ -1075,6 +1118,27 @@ export default function Home() {
               <section className="limit-ladder">{(radar?.limitUp.ladder || []).map((group) => <div className={`ladder-row level-${Math.min(group.level,4)}`} key={group.level}><header><b>{group.level}板</b><small>{group.stocks.length}只</small></header><div>{group.stocks.map((stock) => <button key={stock.code} onClick={() => { setSelected(stock.code); setTab("market"); }}><span><b>{stock.name}</b><em>{stock.code} · {stock.industry}</em></span><strong>{pct(stock.changePct)}</strong><small>首封 {stock.firstSealTime} · 炸板 {stock.openCount}次 · 换手 {stock.turnover.toFixed(1)}%</small></button>)}</div></div>)}</section>
             </>}
             {!radar && radarLoading && <div className="empty"><b>正在读取最近交易日板块与涨停数据…</b></div>}
+          </>
+        )}
+        {tab === "plans" && (
+          <>
+            <div className="plans-head"><div><span className="eyebrow">DISCIPLINED EXECUTION</span><h1>交易计划与实时确认</h1><p>从自选和持仓生成条件计划。盘中越过触发位仅标记“条件确认”，不等于收盘突破或买入建议。</p></div><button onClick={refreshTradePlans}>{plansLoading ? "计算中" : "↻ 重新计算"}</button></div>
+            {plansError && <div className="ai-error">{plansError}{tradePlans.length ? " · 当前显示上次成功缓存" : ""}</div>}
+            <div className="plan-summary"><article><small>计划总数</small><b>{tradePlans.length}</b></article><article><small>条件确认</small><b className="up">{tradePlans.filter((plan) => plan.status === "confirmed").length}</b></article><article><small>重点观察</small><b className="warn-number">{tradePlans.filter((plan) => plan.status === "watch").length}</b></article><article><small>结构失效</small><b className="down">{tradePlans.filter((plan) => plan.status === "invalid").length}</b></article></div>
+            <section className="panel plan-method"><div><b>评分口径</b><span>市场15 + 中期趋势20 + 短期结构15 + 量价20 + 动量15 + 风险收益与流动性15</span></div><small>前复权日线 · 最少120日 · 每30秒用实时价格重新核对 · 最后更新 {plansUpdatedAt ? new Date(plansUpdatedAt).toLocaleString("zh-CN") : "-"}</small></section>
+            <div className="plan-filter">{(["all","confirmed","watch","neutral","invalid","insufficient"] as const).map((status) => <button key={status} className={planFilter === status ? "active" : ""} onClick={() => setPlanFilter(status)}>{status === "all" ? "全部" : status === "confirmed" ? "条件确认" : status === "watch" ? "重点观察" : status === "neutral" ? "普通观察" : status === "invalid" ? "结构失效" : "数据不足"}</button>)}</div>
+            <section className="trade-plan-grid">
+              {tradePlans.filter((plan) => planFilter === "all" || plan.status === planFilter).map((plan, index) => <article className={`trade-plan-card ${plan.status}`} key={plan.code}>
+                <header><div><small>优先级 {index + 1}</small><h2>{plan.name} <em>{plan.code}</em></h2></div><div className="plan-score"><b>{plan.score ?? "—"}</b><small>综合分</small></div><span>{plan.statusLabel}</span></header>
+                <div className="plan-live"><div><small>实时价</small><b>{plan.price?.toFixed(2) ?? "—"}</b></div><div><small>当日涨跌</small><b className={(plan.changePct || 0) >= 0 ? "up" : "down"}>{plan.changePct == null ? "—" : pct(plan.changePct)}</b></div><div><small>量比(20日)</small><b>{plan.indicators?.volumeRatio?.toFixed(2) ?? "—"}</b></div><div><small>风险收益比</small><b>{plan.levels?.riskReward ?? "—"}</b></div></div>
+                {plan.levels && <div className="plan-levels"><div><small>突破触发</small><b>{plan.levels.entryTrigger}</b></div><div><small>回踩观察区</small><b>{plan.levels.pullbackLow}—{plan.levels.pullbackHigh}</b></div><div><small>结构失效</small><b className="down">{plan.levels.invalidPrice}</b></div><div><small>第一压力</small><b>{plan.levels.pressure}</b></div></div>}
+                {plan.components && <div className="plan-components">{([['市场',plan.components.market,15],['中期趋势',plan.components.midTrend,20],['短期结构',plan.components.shortStructure,15],['量价',plan.components.volumePrice,20],['动量',plan.components.momentum,15],['风控流动性',plan.components.riskLiquidity,15]] as [string,number,number][]).map(([label,value,max]) => <div key={label}><span>{label}<em>{value}/{max}</em></span><i><b style={{width:`${value/max*100}%`}} /></i></div>)}</div>}
+                {plan.rules ? <div className="plan-rules"><p><b>确认条件</b>{plan.rules.confirm}</p><p><b>回踩情景</b>{plan.rules.pullback}</p><p><b>失效条件</b>{plan.rules.invalid}</p></div> : <div className="plan-rules"><p>{plan.reasons.join("；")}</p></div>}
+                <footer><small>{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></footer>
+              </article>)}
+              {!tradePlans.length && !plansLoading && <div className="empty"><b>暂无计划</b><span>请先在自选或持仓中添加股票。</span></div>}
+            </section>
+            <section className="panel plan-events"><div className="section-head"><div><small>状态留痕</small><h2>实时确认日志</h2></div><button onClick={() => { setPlanEvents([]); localStorage.removeItem("wealth-plan-events-v1"); }}>清空日志</button></div>{planEvents.length ? planEvents.slice(0,20).map((event) => <div key={event.id}><time>{new Date(event.createdAt).toLocaleString("zh-CN")}</time><b>{event.name} {event.code}</b><span>{({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.from] || event.from} → {({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.to] || event.to}</span><em>{event.price?.toFixed(2) || "—"}</em></div>) : <p className="news-note">状态发生变化后会记录时间、价格和迁移方向；首次载入不会制造事件。</p>}</section>
           </>
         )}
         {tab === "market" && (
