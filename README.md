@@ -8,6 +8,8 @@
 
 - 邮箱注册登录、密码哈希、HttpOnly会话和多用户数据隔离
 - 自选、持仓、预警、计划日志、模拟账户、AI结果及学习进度服务端持久化
+- 头像与个人中心：昵称、头像、默认首页、刷新频率和涨跌配色
+- Android WebView客户端与GitHub Actions自动APK构建
 - 沪深主板、创业板、科创板、北交所及沪深ETF模糊搜索
 - 自选股自定义分组、跨组移动、全字段排序与分页
 - 持仓成本、持仓市值、浮动盈亏与分页
@@ -39,6 +41,8 @@ public/                # 图标和分享图
 lib/auth.ts            # 密码哈希、会话和D1访问
 drizzle/               # D1数据库迁移
 wrangler.jsonc         # 本地/Cloudflare数据库绑定
+android/               # 原生Android客户端工程
+.github/workflows/     # GitHub云端APK构建
 .env.example           # 环境变量模板，不含真实密钥
 ```
 
@@ -90,6 +94,23 @@ DEEPSEEK_MODEL=deepseek-v4-pro
 DeepSeek只在策略室点击“生成AI分析”时调用。结果在当前浏览器缓存30分钟；普通行情约5秒刷新不会触发模型请求。若不配置密钥，行情、自选、持仓、K线、新闻、学习和规则证据层仍可使用。
 
 部署时请在平台的 Secrets/Environment Variables 设置同名变量，不要上传 `.env.local`。
+
+## Android APK
+
+Android客户端是系统的移动入口，登录、行情、数据库和DeepSeek仍由你的服务端提供，API密钥不会打包进APK。首次打开APK时输入：
+
+- 已部署环境：`https://你的域名`
+- 局域网调试：`http://电脑局域网IP:3000`（手机和电脑必须在同一网络，不能填写手机自身的 `localhost`）
+
+本项目已配置 `.github/workflows/android-apk.yml`。推送Android目录后，在GitHub仓库的 **Actions → Build Android APK → Run workflow** 运行，完成后从该任务的 Artifacts 下载 `wealth-os-cn-debug-apk`，解压即可获得可安装的 `app-debug.apk`。
+
+如需本地构建，安装 JDK 17、Android SDK 35 和 Gradle 8.10.2，然后运行：
+
+```bash
+gradle -p android :app:assembleDebug
+```
+
+APK输出位置：`android/app/build/outputs/apk/debug/app-debug.apk`。当前电脑尚未安装Android工具链，因此仓库内提供的是可复现工程和云端自动构建流程，而不是本机生成的二进制文件。正式发布到应用商店前，应另外配置release签名、隐私政策和HTTPS域名。
 
 ## 数据口径
 

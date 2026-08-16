@@ -57,6 +57,8 @@ type BacktestResult = { source: string; fetchedAt: string; code: string; name: s
 type SimPosition = { code: string; name: string; shares: number; available: number; cost: number; buyDate: string };
 type SimOrder = { id: string; code: string; name: string; side: "buy" | "sell"; orderType: "market" | "limit"; price: number; quantity: number; status: "pending" | "filled" | "cancelled" | "rejected"; createdAt: string; filledAt?: string; filledPrice?: number; fee?: number; note?: string };
 type AuthUser = { id: string; email: string; displayName: string };
+type UserProfile = { displayName: string; avatar: string; avatarColor: string; defaultTab: string; refreshSeconds: number; colorMode: "cn" | "global" };
+const DEFAULT_PROFILE: UserProfile = { displayName: "", avatar: "财", avatarColor: "#e85378", defaultTab: "market", refreshSeconds: 5, colorMode: "cn" };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -445,6 +447,8 @@ export default function Home() {
     [authLoading, setAuthLoading] = useState(false),
     [userDataReady, setUserDataReady] = useState(false),
     [cloudSaveState, setCloudSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle"),
+    [profileOpen, setProfileOpen] = useState(false),
+    [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE),
     [tab, setTab] = useState("market"),
     [quotes, setQuotes] = useState<Quote[]>([]),
     [bars, setBars] = useState<Bar[]>([]),
@@ -579,7 +583,7 @@ export default function Home() {
       planEvents: read("wealth-plan-events-v2", []), planStatuses: read("wealth-plan-status-v2", {}),
       simulator: read("wealth-simulator-v1", { cash: 1000000, positions: [], orders: [] }),
       aiAnalyses,
-      preferences: { selected, klt, chartMode, lesson },
+      profile: { ...DEFAULT_PROFILE, displayName: authUser?.displayName || "" }, preferences: { selected, klt, chartMode, lesson },
     };
   };
   const applyUserData = (data: Record<string, any>) => {
@@ -589,8 +593,10 @@ export default function Home() {
     setAlerts(Array.isArray(data.alerts) ? data.alerts : []); setAlertSettings({ ...DEFAULT_ALERT_SETTINGS, ...(data.alertSettings || {}) });
     setPlanEvents(Array.isArray(data.planEvents) ? data.planEvents : []); planStatusRef.current = data.planStatuses || {};
     setAiAnalyses(data.aiAnalyses || {});
+    const nextProfile = { ...DEFAULT_PROFILE, ...(data.profile || {}) }; setProfile(nextProfile);
     const simulator = data.simulator || {}; setSimCash(Number(simulator.cash) || 0); setSimPositions(Array.isArray(simulator.positions) ? simulator.positions : []); setSimOrders(Array.isArray(simulator.orders) ? simulator.orders : []);
     if (data.preferences) { if (data.preferences.selected) setSelected(data.preferences.selected); if (data.preferences.klt) setKlt(data.preferences.klt); if (data.preferences.chartMode) setChartMode(data.preferences.chartMode); if (Number.isInteger(data.preferences.lesson)) setLesson(data.preferences.lesson); }
+    if (nextProfile.defaultTab) setTab(nextProfile.defaultTab);
   };
   const loadUserData = async () => {
     setUserDataReady(false);
@@ -753,9 +759,9 @@ export default function Home() {
   };
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 5000);
+    const t = setInterval(refresh, Math.max(3, profile.refreshSeconds || 5) * 1000);
     return () => clearInterval(t);
-  }, [codes.join(",")]);
+  }, [codes.join(","), profile.refreshSeconds]);
   useEffect(() => {
     refreshRadar();
     const timer = setInterval(refreshRadar, 60000);
@@ -945,11 +951,11 @@ export default function Home() {
     if (!authUser || !userDataReady) return;
     setCloudSaveState("saving");
     const timer = setTimeout(() => {
-      const data = { watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, planStatuses: planStatusRef.current, simulator: { cash: simCash, positions: simPositions, orders: simOrders }, aiAnalyses, preferences: { selected, klt, chartMode, lesson } };
+      const data = { watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, planStatuses: planStatusRef.current, simulator: { cash: simCash, positions: simPositions, orders: simOrders }, aiAnalyses, profile, preferences: { selected, klt, chartMode, lesson } };
       fetch("/api/user-data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) }).then((response) => { if (!response.ok) throw new Error("保存失败"); setCloudSaveState("saved"); }).catch(() => setCloudSaveState("error"));
     }, 650);
     return () => clearTimeout(timer);
-  }, [authUser, userDataReady, watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, simCash, simPositions, simOrders, aiAnalyses, selected, klt, chartMode, lesson]);
+  }, [authUser, userDataReady, watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, simCash, simPositions, simOrders, aiAnalyses, profile, selected, klt, chartMode, lesson]);
   useEffect(() => {
     simOrders.filter((order) => order.status === "pending").forEach((order) => { const quote = map[order.code]; if (!quote) return; const crosses = order.side === "buy" ? order.price >= quote.price : order.price <= quote.price; if (crosses) fillSimOrder(order, quote.price); });
   }, [quotes]);
@@ -1253,7 +1259,7 @@ export default function Home() {
   if (!authChecked) return <main className="auth-shell"><section className="auth-card loading"><span className="auth-mark">↗</span><h1>WEALTH OS</h1><p>正在检查登录状态…</p></section></main>;
   if (!authUser) return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="auth-mark">↗</span><div><b>WEALTH OS</b><small>你的私人投资工作台</small></div></div><h1>{authMode === "login" ? "欢迎回来" : "创建账户"}</h1><p>登录后，自选、持仓、预警、模拟交易和学习进度都会按账户保存。</p>{authMode === "register" && <label>昵称<input value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} placeholder="怎么称呼你" autoComplete="name" /></label>}<label>邮箱<input type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" /></label><label>密码<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitAuth(); }} placeholder="至少8位" autoComplete={authMode === "login" ? "current-password" : "new-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button className="auth-submit" onClick={submitAuth} disabled={authLoading}>{authLoading ? "处理中…" : authMode === "login" ? "登录" : "注册并登录"}</button><button className="auth-switch" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账户？立即注册" : "已有账户？返回登录"}</button><small className="auth-note">密码经过高强度哈希后保存，服务端使用 HttpOnly 会话 Cookie。</small></section></main>;
   return (
-    <main className="terminal">
+    <main className={`terminal color-${profile.colorMode}`}>
       <header>
         <div className="brand">
           <span>↗</span>
@@ -1282,7 +1288,7 @@ export default function Home() {
           ))}
         </nav>
         <div className="head-actions">
-          <span>{authUser.displayName} · {cloudSaveState === "saving" ? "保存中" : cloudSaveState === "error" ? "保存失败" : userDataReady ? "已同步" : "加载中"}</span>
+          <button className="profile-trigger" onClick={() => setProfileOpen(true)}><i style={{background:profile.avatarColor}}>{profile.avatar || (profile.displayName || authUser.displayName).slice(0,1)}</i><span>{profile.displayName || authUser.displayName}<small>{cloudSaveState === "saving" ? "保存中" : cloudSaveState === "error" ? "保存失败" : userDataReady ? "已同步" : "加载中"}</small></span></button>
           <span className="status">
             {error ? `数据异常：${error}` : `真实行情 · ${stamp || "连接中"}`}
           </span>
@@ -1290,6 +1296,7 @@ export default function Home() {
           <button className="logout-button" onClick={logout}>退出</button>
         </div>
       </header>
+      {profileOpen && <div className="profile-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}><section className="profile-panel"><header><div><small>ACCOUNT CENTER</small><h2>个人中心</h2></div><button onClick={() => setProfileOpen(false)}>×</button></header><div className="profile-identity"><i style={{background:profile.avatarColor}}>{profile.avatar || "财"}</i><div><b>{profile.displayName || authUser.displayName}</b><span>{authUser.email}</span></div></div><div className="profile-grid"><label>显示昵称<input value={profile.displayName} maxLength={30} onChange={(event) => setProfile((item) => ({...item,displayName:event.target.value}))} /></label><label>头像文字 / Emoji<input value={profile.avatar} maxLength={2} onChange={(event) => setProfile((item) => ({...item,avatar:event.target.value}))} /></label><label>头像颜色<input type="color" value={profile.avatarColor} onChange={(event) => setProfile((item) => ({...item,avatarColor:event.target.value}))} /></label><label>默认首页<select value={profile.defaultTab} onChange={(event) => setProfile((item) => ({...item,defaultTab:event.target.value}))}><option value="market">市场</option><option value="radar">雷达</option><option value="plans">计划</option><option value="backtest">模拟</option><option value="watch">自选</option><option value="portfolio">持仓</option><option value="alerts">预警</option><option value="strategy">策略</option><option value="learn">学习</option></select></label><label>行情刷新<select value={profile.refreshSeconds} onChange={(event) => setProfile((item) => ({...item,refreshSeconds:+event.target.value}))}><option value={3}>3秒</option><option value={5}>5秒</option><option value={10}>10秒</option><option value={30}>30秒</option></select></label><label>涨跌配色<select value={profile.colorMode} onChange={(event) => setProfile((item) => ({...item,colorMode:event.target.value as UserProfile["colorMode"]}))}><option value="cn">中国：红涨绿跌</option><option value="global">国际：绿涨红跌</option></select></label></div><div className="profile-security"><b>账户与数据</b><p>账号数据已存入D1数据库；密码不会传到页面状态或用户数据文件。</p><span>{cloudSaveState === "error" ? "最近同步失败，请检查网络" : "修改设置后自动保存"}</span></div><footer><button onClick={logout}>退出登录</button><button className="primary" onClick={() => setProfileOpen(false)}>完成</button></footer></section></div>}
       <section className="page realapp">
         {tab !== "learn" && (
           <div className="sourcebar">
