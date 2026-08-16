@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { economicsBookLessons } from "./economics-book-lessons";
 
 type Quote = {
   code: string;
@@ -151,8 +152,12 @@ type CourseLesson = {
   formula?: string;
   calculation?: string;
   interactive?: "compound";
+  source?: string;
+  topics?: string[];
+  investmentLink?: string[];
+  questions?: string[];
 };
-const courseLessons: CourseLesson[] = [
+const investmentLessons: CourseLesson[] = [
   {stage:"零基础",title:"投资到底是什么",summary:"投资是把今天可支配的资源交给能够创造未来现金流的资产，并承担不确定性；它不是猜明天涨跌。",theory:["储蓄强调保管和流动性，投资强调承担风险换取潜在回报。","投机关注价格变化，投资关注资产未来能创造多少价值；两者可能同时存在，但决策依据不同。","任何回报都来自某种风险暴露：经营、信用、利率、流动性或市场情绪。"],example:"买入一家持续盈利企业的股份，是分享企业未来利润；仅因热门消息追涨，则更接近价格投机。",pitfalls:["把投资等同于稳赚","只看收益、不问风险来自哪里","使用短期要花的钱投资高波动资产"]},
   {stage:"零基础",title:"先建立个人财务地基",summary:"投资之前先处理现金流、应急金、保险与高息负债，否则市场波动会迫使你在最差时点卖出。",theory:["应急资金解决意外支出，投资资金解决长期目标，两者用途不同。","高息债务的确定性成本通常高于投资的非确定性收益。","风险承受能力取决于收入稳定性、资金期限和家庭责任，不等于心理胆量。"],example:"未来半年要付首付的钱不适合进入股票市场；十年后退休所需资金才有更长时间消化波动。",pitfalls:["满仓后才考虑应急金","把信用卡分期成本忽略掉","照搬别人的风险等级"]},
   {stage:"零基础",title:"资产、负债与净资产",summary:"资产能带来未来经济利益，负债意味着未来需要偿付；个人净资产是资产减负债。",theory:["现金、股票、债券、房产是资产，但流动性和风险完全不同。","消费品可能有使用价值，却不一定具有投资回报。","净资产增长来自储蓄、资产增值和负债下降。"],example:"一套自住房既提供居住服务，也有价格波动；按揭贷款则是必须持续偿付的负债。",pitfalls:["把所有昂贵物品当投资","忽略负债利率","只看资产总额不看净资产"]},
@@ -181,6 +186,7 @@ const courseLessons: CourseLesson[] = [
   {stage:"高阶",title:"衍生品、杠杆与尾部风险",summary:"期货和期权可用于套期保值，也能放大风险；杠杆会让小幅不利变化转化为大额亏损甚至强制平仓。",theory:["期货是双向合约并采用保证金制度。","期权买方拥有权利，卖方承担履约义务；价格受标的、时间、波动率和利率影响。","杠杆改变损益速度，不创造投资优势。"],example:"10倍杠杆下，标的不利变动5%可能造成约50%的权益损失，实际还受保证金和强平规则影响。",pitfalls:["只看最大收益图","忽略时间价值损耗","把卖期权小额稳定收益当低风险"]},
   {stage:"高阶",title:"建立自己的研究与复盘系统",summary:"稳定流程比临场感觉更可靠：先定义问题、记录证据和反证，再形成可检验的决策与复盘。",theory:["投资备忘录应记录买入逻辑、关键变量、估值区间、风险和失效条件。","区分过程质量与短期结果：好过程也可能暂时亏损，坏过程也可能偶然赚钱。","复盘应检查信息、推理、执行和仓位，而不只是看盈亏。"],example:"买入前写下“若核心产品价格连续两个季度下降则重新评估”，比下跌后临时解释更有约束力。",pitfalls:["只复盘亏损交易","不断修改原始理由","用结果证明当时决策正确"]}
 ];
+const courseLessons: CourseLesson[] = [...investmentLessons, ...economicsBookLessons];
 const money = (n: number) =>
   !Number.isFinite(n)
     ? "-"
@@ -1916,7 +1922,7 @@ export default function Home() {
               <div>
                 <span className="eyebrow">WEALTH ACADEMY</span>
                 <h1>金融知识，从零基础到独立分析</h1>
-                <p>以理论框架为主线，配合市场案例、常见误区与风险边界；仅在需要计算的概念中提供公式和数字演算。</p>
+                <p>双轨课程：先掌握投资与财报基础，再用《薛兆丰经济学讲义》的10章、118讲建立稀缺、成本、价格、产权、利率、信息与周期的完整思维框架。</p>
               </div>
               <div className="progress-card">
                 <div className="ring">
@@ -1957,6 +1963,8 @@ export default function Home() {
                 </span>
                 <h1>{courseLessons[lesson].title}</h1>
                 <p className="lead">{courseLessons[lesson].summary}</p>
+                {courseLessons[lesson].source && <div className="lesson-source"><b>内容依据</b><span>{courseLessons[lesson].source}</span><small>以下为基于用户提供版本的教学性归纳与书外投资连接，不是原文复制。</small></div>}
+                {!!courseLessons[lesson].topics?.length && <section className="lesson-section"><h3>本章学习路线</h3><div className="lesson-topics">{courseLessons[lesson].topics!.map((item,i)=><span key={i}>{String(i+1).padStart(2,"0")} · {item}</span>)}</div></section>}
                 <section className="lesson-section">
                   <h3>核心理论</h3>
                   <ul>{courseLessons[lesson].theory.map((item,i)=><li key={i}>{item}</li>)}</ul>
@@ -1976,6 +1984,8 @@ export default function Home() {
                   <h3>常见误区</h3>
                   <ul>{courseLessons[lesson].pitfalls.map((item,i)=><li key={i}>{item}</li>)}</ul>
                 </section>
+                {!!courseLessons[lesson].investmentLink?.length && <section className="lesson-section investment-box"><h3>连接到投资分析</h3><ul>{courseLessons[lesson].investmentLink!.map((item,i)=><li key={i}>{item}</li>)}</ul></section>}
+                {!!courseLessons[lesson].questions?.length && <section className="lesson-section question-box"><h3>本章自测</h3>{courseLessons[lesson].questions!.map((item,i)=><p key={i}><b>{i+1}</b>{item}</p>)}</section>}
                 <div className="tip">
                   <b>学完这一节：</b>尝试用自己的话解释核心概念，并找一个现实资产判断它的收益来源、风险和失效条件。
                 </div>
