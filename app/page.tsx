@@ -47,6 +47,9 @@ type AlertSettings = {
   holdingReturnPct: number;
   cooldownMinutes: number;
 };
+type RadarBoard = { kind: "industry" | "concept"; code: string; name: string; changePct: number; turnover: number; marketCap: number; mainNetInflow: number; upCount: number; downCount: number; leaderName: string; leaderCode: string; leaderChangePct: number; heatScore: number; components: { momentum: number; breadth: number; flow: number; activity: number } };
+type LimitUpStock = { code: string; market: number; name: string; price: number; changePct: number; amount: number; floatMarketCap: number; marketCap: number; turnover: number; streak: number; firstSealTime: string; lastSealTime: string; sealedAmount: number; openCount: number; industry: string; streakDays: number };
+type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -490,6 +493,11 @@ export default function Home() {
     [alertSettings, setAlertSettings] = useState<AlertSettings>(DEFAULT_ALERT_SETTINGS),
     [alertFilter, setAlertFilter] = useState<"all" | AlertLevel>("all"),
     [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default"),
+    [radar, setRadar] = useState<RadarData | null>(null),
+    [radarLoading, setRadarLoading] = useState(false),
+    [radarError, setRadarError] = useState(""),
+    [radarBoardKind, setRadarBoardKind] = useState<"industry" | "concept">("concept"),
+    [radarView, setRadarView] = useState<"boards" | "ladder">("boards"),
     [learnQ, setLearnQ] = useState(""),
     [lesson, setLesson] = useState(0),
     [principal, setPrincipal] = useState(100000),
@@ -549,11 +557,29 @@ export default function Home() {
       setLoading(false);
     }
   };
+  const refreshRadar = async () => {
+    setRadarLoading(true); setRadarError("");
+    try {
+      const response = await fetch("/api/market?type=radar", { cache: "no-store" });
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || "市场雷达请求失败");
+      setRadar(json);
+      localStorage.setItem("wealth-radar-cache-v1", JSON.stringify(json));
+    } catch (radarFailure) {
+      setRadarError(radarFailure instanceof Error ? radarFailure.message : "市场雷达请求失败");
+      try { const cached = JSON.parse(localStorage.getItem("wealth-radar-cache-v1") || "null"); if (cached) setRadar(cached); } catch {}
+    } finally { setRadarLoading(false); }
+  };
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, [codes.join(",")]);
+  useEffect(() => {
+    refreshRadar();
+    const timer = setInterval(refreshRadar, 60000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     let active = true;
     const cacheKey = `${selected}:${klt}:qfq`;
@@ -989,6 +1015,7 @@ export default function Home() {
         <nav>
           {[
             ["market", "市场"],
+            ["radar", "雷达"],
             ["watch", "自选"],
             ["portfolio", "持仓"],
             ["alerts", `预警${unreadAlerts ? ` ${unreadAlerts}` : ""}`],
@@ -1017,6 +1044,38 @@ export default function Home() {
             <b>数据口径</b> 东方财富 push2 / push2his · 行情与盘口约5秒刷新 ·
             K线前复权 · <span>最后成功 {stamp || "-"}</span>
           </div>
+        )}
+        {tab === "radar" && (
+          <>
+            <div className="radar-head">
+              <div><span className="eyebrow">MARKET RADAR</span><h1>市场情绪与主线雷达</h1><p>板块强弱与涨停梯队来自最近交易日公开行情；热度分数只用于横向比较，不预测涨跌。</p></div>
+              <div><small>交易日</small><b>{radar?.tradingDate ? `${radar.tradingDate.slice(0,4)}-${radar.tradingDate.slice(4,6)}-${radar.tradingDate.slice(6,8)}` : "-"}</b><button onClick={refreshRadar}>{radarLoading ? "更新中" : "↻ 更新雷达"}</button></div>
+            </div>
+            {radarError && <div className="ai-error">{radarError}{radar ? " · 当前显示上次成功缓存" : ""}</div>}
+            <div className="radar-summary">
+              <article><small>涨停家数</small><b className="up">{radar?.limitUp.total ?? "-"}</b><span>最近交易日涨停池</span></article>
+              <article><small>最高连板</small><b>{radar?.limitUp.ladder[0]?.level ? `${radar.limitUp.ladder[0].level}板` : "-"}</b><span>{radar?.limitUp.ladder[0]?.stocks.length || 0}只并列</span></article>
+              <article><small>炸板次数</small><b className="warn-number">{radar ? radar.limitUp.stocks.reduce((sum, stock) => sum + stock.openCount, 0) : "-"}</b><span>涨停池样本累计</span></article>
+              <article><small>封单金额</small><b>{radar ? money(radar.limitUp.stocks.reduce((sum, stock) => sum + stock.sealedAmount, 0)) : "-"}</b><span>当前/收盘封单口径</span></article>
+            </div>
+            <div className="radar-tabs"><div><button className={radarView === "boards" ? "active" : ""} onClick={() => setRadarView("boards")}>板块热度</button><button className={radarView === "ladder" ? "active" : ""} onClick={() => setRadarView("ladder")}>涨停梯队</button></div><small>{radar?.source || "等待真实数据"} · {radar?.fetchedAt ? new Date(radar.fetchedAt).toLocaleString("zh-CN") : "-"}</small></div>
+            {radarView === "boards" && <>
+              <section className="panel radar-method"><div><b>公开评分公式</b><span>{radar?.methodology.formula || "加载中"}</span></div><small>{radar?.methodology.note}</small></section>
+              <div className="radar-kind"><button className={radarBoardKind === "concept" ? "active" : ""} onClick={() => setRadarBoardKind("concept")}>热点概念</button><button className={radarBoardKind === "industry" ? "active" : ""} onClick={() => setRadarBoardKind("industry")}>行业板块</button></div>
+              <section className="radar-board-list">
+                {(radar?.boards[radarBoardKind] || []).slice(0, 20).map((board, index) => <article key={`${board.kind}-${board.code}`}>
+                  <div className="radar-rank">{String(index + 1).padStart(2, "0")}</div><div className="radar-board-name"><b>{board.name}</b><small>{board.code} · 领涨 {board.leaderName || "-"}</small></div>
+                  <div><small>热度</small><b>{board.heatScore}</b></div><div><small>涨跌</small><b className={board.changePct >= 0 ? "up" : "down"}>{pct(board.changePct)}</b></div><div><small>上涨宽度</small><b>{board.upCount}/{board.upCount + board.downCount}</b></div><div><small>主力净流</small><b className={board.mainNetInflow >= 0 ? "up" : "down"}>{money(board.mainNetInflow)}</b></div><div><small>换手</small><b>{board.turnover.toFixed(2)}%</b></div>
+                  <div className="score-strip" title={`动量 ${board.components.momentum.toFixed(0)} · 宽度 ${board.components.breadth.toFixed(0)} · 资金 ${board.components.flow.toFixed(0)} · 活跃 ${board.components.activity.toFixed(0)}`}><i style={{width:`${board.heatScore}%`}} /></div>
+                </article>)}
+              </section>
+            </>}
+            {radarView === "ladder" && <>
+              <section className="limit-industry-strip">{(radar?.limitUp.industries || []).slice(0, 10).map((industry) => <article key={industry.name}><b>{industry.name}</b><span>{industry.count}只涨停 · 最高{industry.maxStreak}板</span></article>)}</section>
+              <section className="limit-ladder">{(radar?.limitUp.ladder || []).map((group) => <div className={`ladder-row level-${Math.min(group.level,4)}`} key={group.level}><header><b>{group.level}板</b><small>{group.stocks.length}只</small></header><div>{group.stocks.map((stock) => <button key={stock.code} onClick={() => { setSelected(stock.code); setTab("market"); }}><span><b>{stock.name}</b><em>{stock.code} · {stock.industry}</em></span><strong>{pct(stock.changePct)}</strong><small>首封 {stock.firstSealTime} · 炸板 {stock.openCount}次 · 换手 {stock.turnover.toFixed(1)}%</small></button>)}</div></div>)}</section>
+            </>}
+            {!radar && radarLoading && <div className="empty"><b>正在读取最近交易日板块与涨停数据…</b></div>}
+          </>
         )}
         {tab === "market" && (
           <>

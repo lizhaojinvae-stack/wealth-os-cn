@@ -14,6 +14,43 @@ export async function GET(request: Request) {
   const type = url.searchParams.get("type") || "quotes";
   const headers = { "User-Agent": "Mozilla/5.0", Referer: "https://quote.eastmoney.com/" };
   try {
+    if (type === "radar") {
+      const radarDate = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, "");
+      const boardFields = "f2,f3,f8,f12,f14,f20,f62,f104,f105,f128,f136,f140,f141";
+      const boardUrl = (kind: "industry" | "concept") =>
+        `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=30&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:${kind === "industry" ? "2" : "3"}&fields=${boardFields}`;
+      const [industryBody, conceptBody, limitBody] = await Promise.all([
+        fetchText(boardUrl("industry"), headers),
+        fetchText(boardUrl("concept"), headers),
+        fetchText(`https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=200&sort=fbt:asc&date=${radarDate}`, headers),
+      ]);
+      type RawBoard = Record<string, number | string>;
+      const industryRows = (JSON.parse(industryBody) as { data?: { diff?: RawBoard[] } }).data?.diff || [];
+      const conceptRows = (JSON.parse(conceptBody) as { data?: { diff?: RawBoard[] } }).data?.diff || [];
+      const allBoards = [...industryRows, ...conceptRows];
+      const maxFlow = Math.max(1, ...allBoards.map((row) => Math.max(0, Number(row.f62) || 0)));
+      const clamp = (value: number) => Math.max(0, Math.min(100, value));
+      const normalizeBoards = (rows: RawBoard[], kind: "industry" | "concept") => rows.map((row) => {
+        const changePct = Number(row.f3) || 0, turnover = Number(row.f8) || 0;
+        const upCount = Number(row.f104) || 0, downCount = Number(row.f105) || 0, total = upCount + downCount;
+        const mainNetInflow = Number(row.f62) || 0;
+        const components = {
+          momentum: clamp(((changePct + 2) / 9) * 100),
+          breadth: total ? clamp((upCount / total) * 100) : 0,
+          flow: clamp((Math.max(0, mainNetInflow) / maxFlow) * 100),
+          activity: clamp((turnover / 12) * 100),
+        };
+        const heatScore = +(components.momentum * .35 + components.breadth * .25 + components.flow * .25 + components.activity * .15).toFixed(1);
+        return { kind, code: String(row.f12 || ""), name: String(row.f14 || ""), changePct, turnover, marketCap: Number(row.f20) || 0, mainNetInflow, upCount, downCount, leaderName: String(row.f128 || ""), leaderCode: String(row.f140 || ""), leaderChangePct: Number(row.f136) || 0, heatScore, components };
+      });
+      type RawLimit = { c?: string; m?: number; n?: string; p?: number; zdp?: number; amount?: number; ltsz?: number; tshare?: number; hs?: number; lbc?: number; fbt?: number; lbt?: number; fund?: number; zbc?: number; hybk?: string; zttj?: { days?: number; ct?: number } };
+      const limitJson = JSON.parse(limitBody) as { data?: { tc?: number; qdate?: number; pool?: RawLimit[] } };
+      const formatClock = (value = 0) => String(value).padStart(6, "0").replace(/^(\d{2})(\d{2})(\d{2})$/, "$1:$2:$3");
+      const limitUp = (limitJson.data?.pool || []).map((row) => ({ code: row.c || "", market: row.m ?? 0, name: row.n || "", price: (row.p || 0) / 1000, changePct: row.zdp || 0, amount: row.amount || 0, floatMarketCap: row.ltsz || 0, marketCap: row.tshare || 0, turnover: row.hs || 0, streak: row.lbc || row.zttj?.ct || 1, firstSealTime: formatClock(row.fbt), lastSealTime: formatClock(row.lbt), sealedAmount: row.fund || 0, openCount: row.zbc || 0, industry: row.hybk || "未分类", streakDays: row.zttj?.days || 1 }));
+      const ladder = Array.from(new Set(limitUp.map((row) => row.streak))).sort((a, b) => b - a).map((level) => ({ level, stocks: limitUp.filter((row) => row.streak === level) }));
+      const industryStats = Array.from(limitUp.reduce((map, row) => { const hit = map.get(row.industry) || { name: row.industry, count: 0, maxStreak: 0, sealedAmount: 0 }; hit.count += 1; hit.maxStreak = Math.max(hit.maxStreak, row.streak); hit.sealedAmount += row.sealedAmount; map.set(row.industry, hit); return map; }, new Map<string, { name: string; count: number; maxStreak: number; sealedAmount: number }>()).values()).sort((a, b) => b.count - a.count || b.maxStreak - a.maxStreak).slice(0, 15);
+      return Response.json({ ok: true, source: "东方财富板块行情 / 涨停池", fetchedAt: new Date().toISOString(), tradingDate: String(limitJson.data?.qdate || ""), methodology: { formula: "热度=涨幅动量35%+上涨宽度25%+主力净流25%+换手活跃15%", note: "分数用于同批板块相对比较，不代表收益预测。" }, boards: { industry: normalizeBoards(industryRows, "industry"), concept: normalizeBoards(conceptRows, "concept") }, limitUp: { total: limitJson.data?.tc || limitUp.length, stocks: limitUp, ladder, industries: industryStats } });
+    }
     if (type === "search") {
       const q = (url.searchParams.get("q") || "").trim().slice(0, 30);
       if (!q) return Response.json({ ok: true, results: [] });
