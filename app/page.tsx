@@ -56,6 +56,7 @@ type PlanEvent = { id: string; code: string; name: string; from: string; to: str
 type BacktestResult = { source: string; fetchedAt: string; code: string; name: string; range: { start: string; end: string; samples: number }; parameters: { initial: number; feeRate: number; slippage: number; entry: string; exit: string; lotSize: number }; metrics: { finalEquity: number; totalReturn: number; annualized: number; maxDrawdown: number; trades: number; winRate: number; profitFactor: number | null; benchmarkReturn: number }; curve: { date: string; equity: number; benchmark: number; drawdown: number }[]; trades: { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string }[] };
 type SimPosition = { code: string; name: string; shares: number; available: number; cost: number; buyDate: string };
 type SimOrder = { id: string; code: string; name: string; side: "buy" | "sell"; orderType: "market" | "limit"; price: number; quantity: number; status: "pending" | "filled" | "cancelled" | "rejected"; createdAt: string; filledAt?: string; filledPrice?: number; fee?: number; note?: string };
+type AuthUser = { id: string; email: string; displayName: string };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -434,7 +435,17 @@ function EquityChart({ data }: { data: BacktestResult["curve"] }) {
 }
 
 export default function Home() {
-  const [tab, setTab] = useState("market"),
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null),
+    [authChecked, setAuthChecked] = useState(false),
+    [authMode, setAuthMode] = useState<"login" | "register">("login"),
+    [authEmail, setAuthEmail] = useState(""),
+    [authPassword, setAuthPassword] = useState(""),
+    [authDisplayName, setAuthDisplayName] = useState(""),
+    [authError, setAuthError] = useState(""),
+    [authLoading, setAuthLoading] = useState(false),
+    [userDataReady, setUserDataReady] = useState(false),
+    [cloudSaveState, setCloudSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle"),
+    [tab, setTab] = useState("market"),
     [quotes, setQuotes] = useState<Quote[]>([]),
     [bars, setBars] = useState<Bar[]>([]),
     [klineMeta, setKlineMeta] = useState({
@@ -457,6 +468,7 @@ export default function Home() {
     }[]>([]),
     [newsUpdatedAt, setNewsUpdatedAt] = useState(""),
     [aiAnalysis, setAiAnalysis] = useState<Record<string, any> | null>(null),
+    [aiAnalyses, setAiAnalyses] = useState<Record<string, { analysis: Record<string, any>; model: string; generatedAt: string }>>({}),
     [aiLoading, setAiLoading] = useState(false),
     [aiError, setAiError] = useState(""),
     [aiMeta, setAiMeta] = useState({ model: "", generatedAt: "" }),
@@ -555,6 +567,55 @@ export default function Home() {
   const simPositionsRef = useRef(simPositions);
   const simProcessingRef = useRef(new Set<string>());
   const simPriceCodeRef = useRef("");
+  const getLocalUserSnapshot = () => {
+    const read = (key: string, fallback: unknown) => { try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch { return fallback; } };
+    const legacyWatch = read("wealth-watch", DEFAULT_WATCH) as string[];
+    const aiAnalyses: Record<string, unknown> = {};
+    for (let index = 0; index < localStorage.length; index += 1) { const key = localStorage.key(index); if (key?.startsWith("wealth-ai-analysis:")) { try { aiAnalyses[key.slice("wealth-ai-analysis:".length)] = JSON.parse(localStorage.getItem(key) || "null"); } catch {} } }
+    return {
+      watchGroups: read("wealth-watch-groups-v1", [{ id: "default", name: "默认分组", codes: legacyWatch }]),
+      watchMeta: read("wealth-watch-meta-v1", {}), holdings: read("wealth-holdings", []),
+      alerts: read("wealth-alerts-v1", []), alertSettings: read("wealth-alert-settings-v1", DEFAULT_ALERT_SETTINGS),
+      planEvents: read("wealth-plan-events-v2", []), planStatuses: read("wealth-plan-status-v2", {}),
+      simulator: read("wealth-simulator-v1", { cash: 1000000, positions: [], orders: [] }),
+      aiAnalyses,
+      preferences: { selected, klt, chartMode, lesson },
+    };
+  };
+  const applyUserData = (data: Record<string, any>) => {
+    const groups = Array.isArray(data.watchGroups) && data.watchGroups.length ? data.watchGroups : [{ id: "default", name: "默认分组", codes: [] }];
+    setWatchGroups(groups); setWatch(Array.from(new Set(groups.flatMap((group: { codes?: string[] }) => group.codes || []))));
+    setWatchMeta(data.watchMeta || {}); setHoldings(Array.isArray(data.holdings) ? data.holdings : []);
+    setAlerts(Array.isArray(data.alerts) ? data.alerts : []); setAlertSettings({ ...DEFAULT_ALERT_SETTINGS, ...(data.alertSettings || {}) });
+    setPlanEvents(Array.isArray(data.planEvents) ? data.planEvents : []); planStatusRef.current = data.planStatuses || {};
+    setAiAnalyses(data.aiAnalyses || {});
+    const simulator = data.simulator || {}; setSimCash(Number(simulator.cash) || 0); setSimPositions(Array.isArray(simulator.positions) ? simulator.positions : []); setSimOrders(Array.isArray(simulator.orders) ? simulator.orders : []);
+    if (data.preferences) { if (data.preferences.selected) setSelected(data.preferences.selected); if (data.preferences.klt) setKlt(data.preferences.klt); if (data.preferences.chartMode) setChartMode(data.preferences.chartMode); if (Number.isInteger(data.preferences.lesson)) setLesson(data.preferences.lesson); }
+  };
+  const loadUserData = async () => {
+    setUserDataReady(false);
+    const response = await fetch("/api/user-data", { cache: "no-store" }), json = await response.json();
+    if (!json.ok) throw new Error(json.error || "读取用户数据失败");
+    if (json.data) applyUserData(json.data);
+    else {
+      const local = getLocalUserSnapshot(); applyUserData(local);
+      await fetch("/api/user-data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: local }) });
+    }
+    setUserDataReady(true);
+  };
+  const submitAuth = async () => {
+    setAuthLoading(true); setAuthError("");
+    try {
+      const response = await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: authMode, email: authEmail, password: authPassword, displayName: authDisplayName }) });
+      const json = await response.json(); if (!json.ok) throw new Error(json.error || "认证失败");
+      setAuthUser(json.user); setAuthPassword(""); await loadUserData();
+    } catch (failure) { setAuthError(failure instanceof Error ? failure.message : "认证失败"); }
+    finally { setAuthLoading(false); }
+  };
+  const logout = async () => {
+    await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "logout" }) });
+    setAuthUser(null); setUserDataReady(false); setAuthPassword("");
+  };
   useEffect(() => {
     try {
       const oldWatch =
@@ -583,6 +644,11 @@ export default function Home() {
       const sim = JSON.parse(localStorage.getItem("wealth-simulator-v1") || "null");
       if (sim) { setSimCash(Number(sim.cash) || 0); setSimPositions(Array.isArray(sim.positions) ? sim.positions : []); setSimOrders(Array.isArray(sim.orders) ? sim.orders : []); }
     } catch {}
+  }, []);
+  useEffect(() => {
+    fetch("/api/auth", { cache: "no-store" }).then((response) => response.json()).then(async (json) => {
+      if (json.ok && json.user) { setAuthUser(json.user); await loadUserData(); }
+    }).catch(() => {}).finally(() => setAuthChecked(true));
   }, []);
   const codes = useMemo(
     () =>
@@ -876,6 +942,15 @@ export default function Home() {
   useEffect(() => { setSimPositions((items) => { let changed = false; const next = items.map((position) => { if (position.buyDate !== simToday && position.available !== position.shares) { changed = true; return { ...position, available: position.shares }; } return position; }); return changed ? next : items; }); }, [simToday, simPositions.length]);
   useEffect(() => { localStorage.setItem("wealth-simulator-v1", JSON.stringify({ cash: simCash, positions: simPositions, orders: simOrders })); }, [simCash, simPositions, simOrders]);
   useEffect(() => {
+    if (!authUser || !userDataReady) return;
+    setCloudSaveState("saving");
+    const timer = setTimeout(() => {
+      const data = { watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, planStatuses: planStatusRef.current, simulator: { cash: simCash, positions: simPositions, orders: simOrders }, aiAnalyses, preferences: { selected, klt, chartMode, lesson } };
+      fetch("/api/user-data", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data }) }).then((response) => { if (!response.ok) throw new Error("保存失败"); setCloudSaveState("saved"); }).catch(() => setCloudSaveState("error"));
+    }, 650);
+    return () => clearTimeout(timer);
+  }, [authUser, userDataReady, watchGroups, watchMeta, holdings, alerts, alertSettings, planEvents, simCash, simPositions, simOrders, aiAnalyses, selected, klt, chartMode, lesson]);
+  useEffect(() => {
     simOrders.filter((order) => order.status === "pending").forEach((order) => { const quote = map[order.code]; if (!quote) return; const crosses = order.side === "buy" ? order.price >= quote.price : order.price <= quote.price; if (crosses) fillSimOrder(order, quote.price); });
   }, [quotes]);
   useEffect(() => {
@@ -1145,11 +1220,11 @@ export default function Home() {
   useEffect(() => {
     setAiError("");
     try {
-      const cached=JSON.parse(localStorage.getItem(`wealth-ai-analysis:${selected}`)||"null");
+      const cached=aiAnalyses[selected] || JSON.parse(localStorage.getItem(`wealth-ai-analysis:${selected}`)||"null");
       if(cached&&Date.now()-new Date(cached.generatedAt).getTime()<30*60*1000){setAiAnalysis(cached.analysis);setAiMeta({model:cached.model||"DeepSeek",generatedAt:cached.generatedAt})}
       else {setAiAnalysis(null);setAiMeta({model:"",generatedAt:""})}
     } catch { setAiAnalysis(null) }
-  }, [selected]);
+  }, [selected, aiAnalyses]);
   const runAiAnalysis = async () => {
     if(!q||bars.length<20)return;
     setAiLoading(true);setAiError("");
@@ -1162,6 +1237,7 @@ export default function Home() {
       })});
       const json=await response.json();if(!json.ok)throw new Error(json.error||"AI分析失败");
       setAiAnalysis(json.analysis);setAiMeta({model:json.model,generatedAt:json.generatedAt});
+      setAiAnalyses((items) => ({ ...items, [selected]: { analysis: json.analysis, model: json.model, generatedAt: json.generatedAt } }));
       localStorage.setItem(`wealth-ai-analysis:${selected}`,JSON.stringify({analysis:json.analysis,model:json.model,generatedAt:json.generatedAt}));
     }catch(error){setAiError(error instanceof Error?error.message:"AI分析失败")}finally{setAiLoading(false)}
   };
@@ -1174,6 +1250,8 @@ export default function Home() {
   const simTotalAssets = simCash + simMarketValue;
   const simProfit = simTotalAssets - 1000000;
   const simQuote = map[simCode.replace(/\D/g, "").slice(-6)];
+  if (!authChecked) return <main className="auth-shell"><section className="auth-card loading"><span className="auth-mark">↗</span><h1>WEALTH OS</h1><p>正在检查登录状态…</p></section></main>;
+  if (!authUser) return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span className="auth-mark">↗</span><div><b>WEALTH OS</b><small>你的私人投资工作台</small></div></div><h1>{authMode === "login" ? "欢迎回来" : "创建账户"}</h1><p>登录后，自选、持仓、预警、模拟交易和学习进度都会按账户保存。</p>{authMode === "register" && <label>昵称<input value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} placeholder="怎么称呼你" autoComplete="name" /></label>}<label>邮箱<input type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" /></label><label>密码<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitAuth(); }} placeholder="至少8位" autoComplete={authMode === "login" ? "current-password" : "new-password"} /></label>{authError && <div className="auth-error">{authError}</div>}<button className="auth-submit" onClick={submitAuth} disabled={authLoading}>{authLoading ? "处理中…" : authMode === "login" ? "登录" : "注册并登录"}</button><button className="auth-switch" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}>{authMode === "login" ? "没有账户？立即注册" : "已有账户？返回登录"}</button><small className="auth-note">密码经过高强度哈希后保存，服务端使用 HttpOnly 会话 Cookie。</small></section></main>;
   return (
     <main className="terminal">
       <header>
@@ -1204,10 +1282,12 @@ export default function Home() {
           ))}
         </nav>
         <div className="head-actions">
+          <span>{authUser.displayName} · {cloudSaveState === "saving" ? "保存中" : cloudSaveState === "error" ? "保存失败" : userDataReady ? "已同步" : "加载中"}</span>
           <span className="status">
             {error ? `数据异常：${error}` : `真实行情 · ${stamp || "连接中"}`}
           </span>
           <button onClick={refresh}>{loading ? "同步中" : "↻ 刷新"}</button>
+          <button className="logout-button" onClick={logout}>退出</button>
         </div>
       </header>
       <section className="page realapp">

@@ -6,6 +6,8 @@
 
 ## 功能
 
+- 邮箱注册登录、密码哈希、HttpOnly会话和多用户数据隔离
+- 自选、持仓、预警、计划日志、模拟账户、AI结果及学习进度服务端持久化
 - 沪深主板、创业板、科创板、北交所及沪深ETF模糊搜索
 - 自选股自定义分组、跨组移动、全字段排序与分页
 - 持仓成本、持仓市值、浮动盈亏与分页
@@ -28,10 +30,15 @@ app/
   api/
     analyze/route.ts   # DeepSeek服务端代理，密钥不会进入浏览器
     market/route.ts    # 行情、K线、搜索、盘口、资讯和区间表现
+    auth/route.ts      # 注册、登录、退出和会话查询
+    user-data/route.ts # 当前用户数据读取与保存
   page.tsx             # 单页投资工作台
   globals.css          # 主题与响应式样式
   layout.tsx           # 页面元数据
 public/                # 图标和分享图
+lib/auth.ts            # 密码哈希、会话和D1访问
+drizzle/               # D1数据库迁移
+wrangler.jsonc         # 本地/Cloudflare数据库绑定
 .env.example           # 环境变量模板，不含真实密钥
 ```
 
@@ -42,6 +49,7 @@ public/                # 图标和分享图
 ```bash
 npm install
 copy .env.example .env.local
+npm run db:migrate
 npm run dev
 ```
 
@@ -52,6 +60,21 @@ npm run stop
 ```
 
 浏览器访问 `http://localhost:3000/`。macOS/Linux 使用 `cp .env.example .env.local`。
+
+首次启动必须先执行 `npm run db:migrate`。本地账户数据库保存在 `.wrangler/state`，停止或重启服务不会丢失；不要删除 `.wrangler`，否则本地用户数据会被清除。
+
+## 登录与用户数据
+
+系统使用邮箱注册。密码通过 PBKDF2-SHA256（210,000次迭代和独立随机盐）保存，不保存明文；登录状态使用30天有效的 HttpOnly、SameSite=Lax Cookie。服务端所有用户数据查询都会先从会话确定用户身份，用户之间的数据互不读取。
+
+首次注册后，浏览器原有的自选、持仓、预警、计划日志、模拟账户与AI分析会自动迁移到该账户。此后修改会在约650毫秒防抖后同步到D1数据库，顶部会显示“保存中 / 已同步 / 保存失败”。
+
+部署到 Cloudflare 前，需要创建远程D1数据库，将 `wrangler.jsonc` 中的 `database_id` 换成真实ID，并执行远程迁移：
+
+```bash
+npx wrangler d1 create wealth-os-cn
+npx wrangler d1 migrations apply wealth-os-cn --remote
+```
 
 ## DeepSeek 配置
 
@@ -104,7 +127,7 @@ DeepSeek收到当前股票的数据快照，包括行情、估值、前复权K�
 
 ## 本地数据
 
-自选分组、持仓、自选日期与价格、K线、历史表现、模拟账户和AI分析缓存保存在浏览器 `localStorage`。清除站点数据会删除本地记录，不同设备不会自动同步。
+登录后的自选分组、持仓、自选日期与价格、预警、计划日志、模拟账户、AI分析和学习进度保存在D1数据库。行情K线、市场雷达等可再生成的公共数据仍可在浏览器缓存。首次登录会导入旧版 `localStorage` 数据；清除浏览器站点数据不会删除已同步的账户数据。
 
 ## 常用命令
 
