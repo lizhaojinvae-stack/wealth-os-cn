@@ -52,6 +52,8 @@ type AlertSettings = {
 type RadarBoard = { kind: "industry" | "concept"; code: string; name: string; changePct: number; turnover: number; marketCap: number; mainNetInflow: number; upCount: number; downCount: number; leaderName: string; leaderCode: string; leaderChangePct: number; heatScore: number; components: { momentum: number; breadth: number; flow: number; activity: number } };
 type LimitUpStock = { code: string; market: number; name: string; price: number; changePct: number; amount: number; floatMarketCap: number; marketCap: number; turnover: number; streak: number; firstSealTime: string; lastSealTime: string; sealedAmount: number; openCount: number; industry: string; streakDays: number };
 type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
+type ScreenerRow = { code: string; market: number; name: string; price: number; changePct: number; change: number; amount: number; turnover: number; pe: number; volumeRatio: number; marketCap: number; floatMarketCap: number; pb: number; mainNetInflow: number };
+type ScreenerFilters = { minChange: number; maxChange: number; minTurnover: number; minAmountYi: number; minCapYi: number; maxPe: number; sort: "changePct" | "amount" | "turnover" | "marketCap" | "mainNetInflow" | "volumeRatio"; direction: "asc" | "desc" };
 type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; dataHealth?: "ok" | "stale" | "insufficient"; structureBroken?: boolean; trendWeak?: boolean; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
 type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
 type BacktestResult = { source: string; fetchedAt: string; code: string; name: string; range: { start: string; end: string; samples: number }; parameters: { initial: number; feeRate: number; slippage: number; entry: string; exit: string; lotSize: number }; metrics: { finalEquity: number; totalReturn: number; annualized: number; maxDrawdown: number; trades: number; winRate: number; profitFactor: number | null; benchmarkReturn: number }; curve: { date: string; equity: number; benchmark: number; drawdown: number }[]; trades: { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string }[] };
@@ -554,6 +556,15 @@ export default function Home() {
     [alertSettings, setAlertSettings] = useState<AlertSettings>(DEFAULT_ALERT_SETTINGS),
     [alertFilter, setAlertFilter] = useState<"all" | AlertLevel>("all"),
     [notificationPermission, setNotificationPermission] = useState<NotificationPermission>("default"),
+    [screenerFilters, setScreenerFilters] = useState<ScreenerFilters>({ minChange: -20, maxChange: 20, minTurnover: 0, minAmountYi: 1, minCapYi: 0, maxPe: 0, sort: "changePct", direction: "desc" }),
+    [screenerRows, setScreenerRows] = useState<ScreenerRow[]>([]),
+    [screenerAllRows, setScreenerAllRows] = useState<ScreenerRow[]>([]),
+    [screenerPage, setScreenerPage] = useState(1),
+    [screenerTotal, setScreenerTotal] = useState(0),
+    [screenerUniverse, setScreenerUniverse] = useState(0),
+    [screenerLoading, setScreenerLoading] = useState(false),
+    [screenerError, setScreenerError] = useState(""),
+    [screenerUpdatedAt, setScreenerUpdatedAt] = useState(""),
     [radar, setRadar] = useState<RadarData | null>(null),
     [radarLoading, setRadarLoading] = useState(false),
     [radarError, setRadarError] = useState(""),
@@ -729,6 +740,19 @@ export default function Home() {
       try { const cached = JSON.parse(localStorage.getItem("wealth-radar-cache-v1") || "null"); if (cached) setRadar(cached); } catch {}
     } finally { setRadarLoading(false); }
   };
+  const refreshScreener = async (page = screenerPage, filters = screenerFilters) => {
+    setScreenerLoading(true); setScreenerError("");
+    try {
+      const base = Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, String(value)]));
+      const payloads: any[] = [];
+      for (let index = 0; index < 6; index += 1) { const response = await fetch(`/api/market?${new URLSearchParams({ type:"screener", segment:String(index + 1), ...base })}`, { cache:"no-store" }); const json = await response.json(); if (!json.ok) throw new Error(json.error || `第${index + 1}段筛选失败`); payloads.push(json); }
+      const merged = payloads.flatMap((payload) => payload.results || []) as ScreenerRow[];
+      const key = filters.sort; merged.sort((a,b) => (Number(a[key]) - Number(b[key])) * (filters.direction === "asc" ? 1 : -1));
+      setScreenerAllRows(merged); setScreenerRows(merged.slice((page - 1) * 30, page * 30)); setScreenerTotal(merged.length); setScreenerUniverse(payloads[0]?.universeTotal || 0); setScreenerPage(page); setScreenerUpdatedAt(payloads[0]?.fetchedAt || "");
+    } catch (failure) { setScreenerError(failure instanceof Error ? failure.message : "全市场筛选失败"); }
+    finally { setScreenerLoading(false); }
+  };
+  const showScreenerPage = (page: number) => { setScreenerPage(page); setScreenerRows(screenerAllRows.slice((page - 1) * 30, page * 30)); };
   const refreshTradePlans = async () => {
     if (!planCodes.length) { setTradePlans([]); return; }
     setPlansLoading(true); setPlansError("");
@@ -1308,6 +1332,7 @@ export default function Home() {
         <nav>
           {[
             ["market", "市场"],
+            ["screener", "选股"],
             ["radar", "雷达"],
             ["plans", "计划"],
             ["backtest", "模拟"],
@@ -1335,13 +1360,28 @@ export default function Home() {
           <button className="logout-button" onClick={logout}>退出</button>
         </div>
       </header>
-      {profileOpen && <div className="profile-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}><section className="profile-panel"><header><div><small>ACCOUNT CENTER</small><h2>个人中心</h2></div><button onClick={() => setProfileOpen(false)}>×</button></header><div className="profile-identity"><i style={{background:profile.avatarColor}}>{profile.avatar || "财"}</i><div><b>{profile.displayName || authUser.displayName}</b><span>{authUser.email}</span></div></div><div className="profile-grid"><label>显示昵称<input value={profile.displayName} maxLength={30} onChange={(event) => setProfile((item) => ({...item,displayName:event.target.value}))} /></label><label>头像文字 / Emoji<input value={profile.avatar} maxLength={2} onChange={(event) => setProfile((item) => ({...item,avatar:event.target.value}))} /></label><label>头像颜色<input type="color" value={profile.avatarColor} onChange={(event) => setProfile((item) => ({...item,avatarColor:event.target.value}))} /></label><label>默认首页<select value={profile.defaultTab} onChange={(event) => setProfile((item) => ({...item,defaultTab:event.target.value}))}><option value="market">市场</option><option value="radar">雷达</option><option value="plans">计划</option><option value="backtest">模拟</option><option value="watch">自选</option><option value="portfolio">持仓</option><option value="alerts">预警</option><option value="strategy">策略</option><option value="learn">学习</option></select></label><label>行情刷新<select value={profile.refreshSeconds} onChange={(event) => setProfile((item) => ({...item,refreshSeconds:+event.target.value}))}><option value={3}>3秒</option><option value={5}>5秒</option><option value={10}>10秒</option><option value={30}>30秒</option></select></label><label>涨跌配色<select value={profile.colorMode} onChange={(event) => setProfile((item) => ({...item,colorMode:event.target.value as UserProfile["colorMode"]}))}><option value="cn">中国：红涨绿跌</option><option value="global">国际：绿涨红跌</option></select></label></div><div className="profile-security"><b>账户与数据</b><p>账号数据已存入D1数据库；密码不会传到页面状态或用户数据文件。</p><span>{cloudSaveState === "error" ? "最近同步失败，请检查网络" : "修改设置后自动保存"}</span></div><footer><button onClick={logout}>退出登录</button><button className="primary" onClick={() => setProfileOpen(false)}>完成</button></footer></section></div>}
+      {profileOpen && <div className="profile-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}><section className="profile-panel"><header><div><small>ACCOUNT CENTER</small><h2>个人中心</h2></div><button onClick={() => setProfileOpen(false)}>×</button></header><div className="profile-identity"><i style={{background:profile.avatarColor}}>{profile.avatar || "财"}</i><div><b>{profile.displayName || authUser.displayName}</b><span>{authUser.email}</span></div></div><div className="profile-grid"><label>显示昵称<input value={profile.displayName} maxLength={30} onChange={(event) => setProfile((item) => ({...item,displayName:event.target.value}))} /></label><label>头像文字 / Emoji<input value={profile.avatar} maxLength={2} onChange={(event) => setProfile((item) => ({...item,avatar:event.target.value}))} /></label><label>头像颜色<input type="color" value={profile.avatarColor} onChange={(event) => setProfile((item) => ({...item,avatarColor:event.target.value}))} /></label><label>默认首页<select value={profile.defaultTab} onChange={(event) => setProfile((item) => ({...item,defaultTab:event.target.value}))}><option value="market">市场</option><option value="screener">选股</option><option value="radar">雷达</option><option value="plans">计划</option><option value="backtest">模拟</option><option value="watch">自选</option><option value="portfolio">持仓</option><option value="alerts">预警</option><option value="strategy">策略</option><option value="learn">学习</option></select></label><label>行情刷新<select value={profile.refreshSeconds} onChange={(event) => setProfile((item) => ({...item,refreshSeconds:+event.target.value}))}><option value={3}>3秒</option><option value={5}>5秒</option><option value={10}>10秒</option><option value={30}>30秒</option></select></label><label>涨跌配色<select value={profile.colorMode} onChange={(event) => setProfile((item) => ({...item,colorMode:event.target.value as UserProfile["colorMode"]}))}><option value="cn">中国：红涨绿跌</option><option value="global">国际：绿涨红跌</option></select></label></div><div className="profile-security"><b>账户与数据</b><p>账号数据已存入D1数据库；密码不会传到页面状态或用户数据文件。</p><span>{cloudSaveState === "error" ? "最近同步失败，请检查网络" : "修改设置后自动保存"}</span></div><footer><button onClick={logout}>退出登录</button><button className="primary" onClick={() => setProfileOpen(false)}>完成</button></footer></section></div>}
       <section className="page realapp">
         {tab !== "learn" && (
           <div className="sourcebar">
             <b>数据口径</b> 东方财富 push2 / push2his · 行情与盘口约{Math.max(3, profile.refreshSeconds || 5)}秒刷新 ·
             K线前复权 · <span>最后成功 {stamp || "-"}</span>
           </div>
+        )}
+        {tab === "screener" && (
+          <>
+            <div className="screener-head"><div><span className="eyebrow">QUANT SCREENING</span><h1>全市场指标筛选</h1><p>从沪深京A股真实行情中组合筛选候选，不使用演示数据；结果是研究线索，不构成买入建议。</p></div><button onClick={() => refreshScreener(1)}>{screenerLoading ? "筛选中" : "运行筛选"}</button></div>
+            <section className="panel screener-filters">
+              {([['minChange','最小涨幅','%'],['maxChange','最大涨幅','%'],['minTurnover','最低换手','%'],['minAmountYi','最低成交额','亿元'],['minCapYi','最低总市值','亿元'],['maxPe','最高PE','0=不限']] as const).map(([key,label,unit]) => <label key={key}><span>{label}</span><div><input type="number" step="0.1" value={screenerFilters[key]} onChange={(event) => setScreenerFilters((current) => ({...current,[key]:Number(event.target.value)}))}/><em>{unit}</em></div></label>)}
+              <label><span>排序指标</span><select value={screenerFilters.sort} onChange={(event) => setScreenerFilters((current) => ({...current,sort:event.target.value as ScreenerFilters['sort']}))}><option value="changePct">涨跌幅</option><option value="amount">成交额</option><option value="turnover">换手率</option><option value="marketCap">总市值</option><option value="mainNetInflow">主力净流入</option><option value="volumeRatio">量比</option></select></label>
+              <label><span>排序方向</span><select value={screenerFilters.direction} onChange={(event) => setScreenerFilters((current) => ({...current,direction:event.target.value as ScreenerFilters['direction']}))}><option value="desc">从高到低</option><option value="asc">从低到高</option></select></label>
+              <button className="primary" onClick={() => refreshScreener(1)} disabled={screenerLoading}>{screenerLoading ? "正在读取全市场" : "应用条件"}</button>
+            </section>
+            {screenerError && <div className="ai-error">{screenerError}</div>}
+            <div className="screener-meta"><span>全市场样本 {screenerUniverse || '—'} 只 · 命中 {screenerTotal} 只</span><small>东方财富实时行情 · {screenerUpdatedAt ? new Date(screenerUpdatedAt).toLocaleString('zh-CN') : '尚未运行'}</small></div>
+            <section className="panel screener-table"><div className="screener-row header"><span>股票</span><span>最新价</span><span>涨跌幅</span><span>量比</span><span>换手率</span><span>成交额</span><span>总市值</span><span>PE / PB</span><span>主力净流</span><span>操作</span></div>{screenerRows.map((row) => <div className="screener-row" key={`${row.market}.${row.code}`}><span><b>{row.name}</b><small>{row.code}</small></span><span>{row.price.toFixed(2)}</span><span className={row.changePct >= 0 ? 'up' : 'down'}>{pct(row.changePct)}</span><span>{row.volumeRatio.toFixed(2)}</span><span>{row.turnover.toFixed(2)}%</span><span>{money(row.amount)}</span><span>{money(row.marketCap)}</span><span>{row.pe > 0 ? row.pe.toFixed(1) : '—'} / {row.pb > 0 ? row.pb.toFixed(1) : '—'}</span><span className={row.mainNetInflow >= 0 ? 'up' : 'down'}>{money(row.mainNetInflow)}</span><span><button onClick={() => addCode(row.code)}>加自选</button><button onClick={() => {setSelected(row.code);setTab('market')}}>详情</button><button onClick={() => {setSimCode(row.code);setSimPrice(row.price);setTab('backtest')}}>模拟</button></span></div>)}{!screenerRows.length && !screenerLoading && <div className="empty"><b>设置条件后运行筛选</b><span>默认最低成交额1亿元，避免低流动性样本干扰。</span></div>}</section>
+            {screenerTotal > 30 && <div className="list-pager"><button disabled={screenerPage <= 1 || screenerLoading} onClick={() => showScreenerPage(screenerPage - 1)}>上一页</button><span>第 {screenerPage} / {Math.ceil(screenerTotal / 30)} 页</span><button disabled={screenerPage >= Math.ceil(screenerTotal / 30) || screenerLoading} onClick={() => showScreenerPage(screenerPage + 1)}>下一页</button></div>}
+          </>
         )}
         {tab === "radar" && (
           <>

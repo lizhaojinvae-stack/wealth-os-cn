@@ -14,6 +14,40 @@ export async function GET(request: Request) {
   const type = url.searchParams.get("type") || "quotes";
   const headers = { "User-Agent": "Mozilla/5.0", Referer: "https://quote.eastmoney.com/" };
   try {
+    if (type === "screener") {
+      const numberParam = (name: string, fallback: number) => {
+        const value = Number(url.searchParams.get(name));
+        return Number.isFinite(value) ? value : fallback;
+      };
+      const minChange = numberParam("minChange", -20), maxChange = numberParam("maxChange", 20);
+      const minTurnover = Math.max(0, numberParam("minTurnover", 0));
+      const minAmountYi = Math.max(0, numberParam("minAmountYi", 0));
+      const minCapYi = Math.max(0, numberParam("minCapYi", 0));
+      const maxPe = Math.max(0, numberParam("maxPe", 0));
+      const sort = ["changePct", "amount", "turnover", "marketCap", "mainNetInflow", "volumeRatio"].includes(url.searchParams.get("sort") || "") ? url.searchParams.get("sort")! : "changePct";
+      const direction = url.searchParams.get("direction") === "asc" ? "asc" : "desc";
+      const segment = Math.min(6, Math.max(1, Math.floor(numberParam("segment", 1))));
+      const fields = "f2,f3,f4,f6,f8,f9,f10,f12,f13,f14,f20,f21,f23,f62";
+      const universe = "m:0+t:6,m:0+t:80,m:0+t:81+s:2048,m:1+t:2,m:1+t:23";
+      type RawScreenRow = Record<string, number | string>;
+      const pageUrl = (page: number) => `https://push2.eastmoney.com/api/qt/clist/get?pn=${page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(universe)}&fields=${fields}`;
+      const firstPage = JSON.parse(await fetchText(pageUrl((segment - 1) * 10 + 1), headers)) as { data?: { diff?: RawScreenRow[]; total?: number } };
+      const universeTotal = Number(firstPage.data?.total) || 0, maxPage = Math.ceil(universeTotal / 100), startPage = (segment - 1) * 10 + 1, endPage = Math.min(startPage + 9, maxPage);
+      const remainingPages: { data?: { diff?: RawScreenRow[] } }[] = [];
+      for (let page = startPage + 1; page <= endPage; page += 3) {
+        remainingPages.push(...await Promise.all(Array.from({ length: Math.min(3, endPage - page + 1) }, (_, index) => fetchText(pageUrl(page + index), headers).then((text) => JSON.parse(text) as { data?: { diff?: RawScreenRow[] } }))));
+      }
+      const rawRows = [...(firstPage.data?.diff || []), ...remainingPages.flatMap((payload) => payload.data?.diff || [])];
+      const rows = rawRows.map((row) => ({
+        code: String(row.f12 || ""), market: Number(row.f13) || 0, name: String(row.f14 || ""), price: Number(row.f2) || 0,
+        changePct: Number(row.f3) || 0, change: Number(row.f4) || 0, amount: Number(row.f6) || 0, turnover: Number(row.f8) || 0,
+        pe: Number(row.f9) || 0, volumeRatio: Number(row.f10) || 0, marketCap: Number(row.f20) || 0,
+        floatMarketCap: Number(row.f21) || 0, pb: Number(row.f23) || 0, mainNetInflow: Number(row.f62) || 0,
+      })).filter((row) => /^\d{6}$/.test(row.code) && row.price > 0 && row.changePct >= minChange && row.changePct <= maxChange && row.turnover >= minTurnover && row.amount >= minAmountYi * 100000000 && row.marketCap >= minCapYi * 100000000 && (!maxPe || (row.pe > 0 && row.pe <= maxPe)));
+      const sortKey: Record<string, keyof typeof rows[number]> = { changePct: "changePct", amount: "amount", turnover: "turnover", marketCap: "marketCap", mainNetInflow: "mainNetInflow", volumeRatio: "volumeRatio" };
+      rows.sort((a, b) => (Number(a[sortKey[sort]]) - Number(b[sortKey[sort]])) * (direction === "asc" ? 1 : -1));
+      return Response.json({ ok: true, source: "东方财富沪深京A股实时行情", fetchedAt: new Date().toISOString(), universeTotal, segment, scanned: rawRows.length, results: rows, filters: { minChange, maxChange, minTurnover, minAmountYi, minCapYi, maxPe, sort, direction } });
+    }
     if (type === "radar") {
       const radarDate = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, "");
       const boardFields = "f2,f3,f8,f12,f14,f20,f62,f104,f105,f128,f136,f140,f141";
