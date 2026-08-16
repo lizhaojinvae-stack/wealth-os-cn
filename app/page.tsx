@@ -54,6 +54,8 @@ type RadarData = { source: string; fetchedAt: string; tradingDate: string; metho
 type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; dataHealth?: "ok" | "stale" | "insufficient"; structureBroken?: boolean; trendWeak?: boolean; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
 type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
 type BacktestResult = { source: string; fetchedAt: string; code: string; name: string; range: { start: string; end: string; samples: number }; parameters: { initial: number; feeRate: number; slippage: number; entry: string; exit: string; lotSize: number }; metrics: { finalEquity: number; totalReturn: number; annualized: number; maxDrawdown: number; trades: number; winRate: number; profitFactor: number | null; benchmarkReturn: number }; curve: { date: string; equity: number; benchmark: number; drawdown: number }[]; trades: { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string }[] };
+type SimPosition = { code: string; name: string; shares: number; available: number; cost: number; buyDate: string };
+type SimOrder = { id: string; code: string; name: string; side: "buy" | "sell"; orderType: "market" | "limit"; price: number; quantity: number; status: "pending" | "filled" | "cancelled" | "rejected"; createdAt: string; filledAt?: string; filledPrice?: number; fee?: number; note?: string };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -528,6 +530,17 @@ export default function Home() {
     [backtest, setBacktest] = useState<BacktestResult | null>(null),
     [backtestLoading, setBacktestLoading] = useState(false),
     [backtestError, setBacktestError] = useState(""),
+    [simCash, setSimCash] = useState(1000000),
+    [simPositions, setSimPositions] = useState<SimPosition[]>([]),
+    [simOrders, setSimOrders] = useState<SimOrder[]>([]),
+    [simCode, setSimCode] = useState("600519"),
+    [simSide, setSimSide] = useState<"buy" | "sell">("buy"),
+    [simOrderType, setSimOrderType] = useState<"market" | "limit">("limit"),
+    [simPrice, setSimPrice] = useState(0),
+    [simQuantity, setSimQuantity] = useState(100),
+    [simMessage, setSimMessage] = useState(""),
+    [simView, setSimView] = useState<"positions" | "orders" | "fills">("positions"),
+    [simSuggestions, setSimSuggestions] = useState<{ code: string; name: string; market: string; type: string }[]>([]),
     [learnQ, setLearnQ] = useState(""),
     [lesson, setLesson] = useState(0),
     [principal, setPrincipal] = useState(100000),
@@ -538,6 +551,10 @@ export default function Home() {
   const planStatusRef = useRef<Record<string, string>>({});
   const planBreakCountRef = useRef<Record<string, number>>({});
   const planFailureCountRef = useRef<Record<string, number>>({});
+  const simCashRef = useRef(simCash);
+  const simPositionsRef = useRef(simPositions);
+  const simProcessingRef = useRef(new Set<string>());
+  const simPriceCodeRef = useRef("");
   useEffect(() => {
     try {
       const oldWatch =
@@ -563,6 +580,8 @@ export default function Home() {
       // v2 starts with the corrected lifecycle model; old “数据不足/误判失效” logs are intentionally not migrated.
       setPlanEvents(JSON.parse(localStorage.getItem("wealth-plan-events-v2") || "[]"));
       planStatusRef.current = JSON.parse(localStorage.getItem("wealth-plan-status-v2") || "{}");
+      const sim = JSON.parse(localStorage.getItem("wealth-simulator-v1") || "null");
+      if (sim) { setSimCash(Number(sim.cash) || 0); setSimPositions(Array.isArray(sim.positions) ? sim.positions : []); setSimOrders(Array.isArray(sim.orders) ? sim.orders : []); }
     } catch {}
   }, []);
   const codes = useMemo(
@@ -572,10 +591,12 @@ export default function Home() {
           ...INDEX_CODES,
           ...watch,
           ...holdings.map((h) => h.code),
+          ...simPositions.map((position) => position.code),
+          ...(/^\d{6}$/.test(simCode) ? [simCode] : []),
           selected,
         ]),
       ),
-    [watch, holdings, selected],
+    [watch, holdings, simPositions, simCode, selected],
   );
   const planCodes = useMemo(() => Array.from(new Set([...watch, ...holdings.map((holding) => holding.code)])).slice(0, 20), [watch, holdings]);
   const refresh = async () => {
@@ -811,6 +832,51 @@ export default function Home() {
       if (!INDEX_CODES.includes(`${q.market}.${q.code}`)) m[q.code] = q;
     });
     return m;
+  }, [quotes]);
+  const simToday = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+  const simFee = (amount: number, side: "buy" | "sell") => Math.max(5, amount * .0003) + amount * .00001 + (side === "sell" ? amount * .0005 : 0);
+  const fillSimOrder = (order: SimOrder, fillPrice: number) => {
+    if (simProcessingRef.current.has(order.id)) return;
+    simProcessingRef.current.add(order.id);
+    const amount = fillPrice * order.quantity, fee = simFee(amount, order.side);
+    if (order.side === "buy") {
+      if (simCashRef.current < amount + fee) { setSimOrders((items) => items.map((x) => x.id === order.id ? { ...x, status: "rejected", note: "可用资金不足" } : x)); return; }
+      setSimCash((cash) => cash - amount - fee);
+      setSimPositions((items) => { const old = items.find((x) => x.code === order.code); if (!old) return [...items, { code: order.code, name: order.name, shares: order.quantity, available: 0, cost: (amount + fee) / order.quantity, buyDate: simToday }]; const total = old.shares + order.quantity; return items.map((x) => x.code === order.code ? { ...x, shares: total, cost: (old.cost * old.shares + amount + fee) / total, buyDate: simToday } : x); });
+    } else {
+      const position = simPositionsRef.current.find((x) => x.code === order.code);
+      if (!position || position.available < order.quantity) { setSimOrders((items) => items.map((x) => x.id === order.id ? { ...x, status: "rejected", note: "可用股份不足（模拟账户执行T+1）" } : x)); return; }
+      setSimCash((cash) => cash + amount - fee);
+      setSimPositions((items) => items.map((x) => x.code === order.code ? { ...x, shares: x.shares - order.quantity, available: x.available - order.quantity } : x).filter((x) => x.shares > 0));
+    }
+    setSimOrders((items) => items.map((x) => x.id === order.id ? { ...x, status: "filled", filledAt: new Date().toISOString(), filledPrice: +fillPrice.toFixed(2), fee: +fee.toFixed(2) } : x));
+  };
+  const placeSimOrder = () => {
+    const code = simCode.replace(/\D/g, "").slice(-6), quote = map[code];
+    if (!quote || !Number.isFinite(quote.price)) { setSimMessage("未取得该证券实时行情，请输入已上市的6位股票或ETF代码"); return; }
+    const quantity = Math.floor(simQuantity / 100) * 100, price = simOrderType === "market" ? quote.price : simPrice;
+    if (quantity <= 0 || price <= 0) { setSimMessage("委托数量必须为100股整数倍，价格必须大于0"); return; }
+    const frozenBuy = simOrders.filter((x) => x.status === "pending" && x.side === "buy").reduce((sum, x) => sum + x.price * x.quantity, 0);
+    const frozenSell = simOrders.filter((x) => x.status === "pending" && x.side === "sell" && x.code === code).reduce((sum, x) => sum + x.quantity, 0);
+    if (simSide === "buy" && simCash - frozenBuy < price * quantity + simFee(price * quantity, "buy")) { setSimMessage("可用资金不足"); return; }
+    if (simSide === "sell" && (simPositions.find((x) => x.code === code)?.available || 0) - frozenSell < quantity) { setSimMessage("可卖数量不足；当日买入股份需下一交易日才能卖出"); return; }
+    const order: SimOrder = { id: `${Date.now()}-${code}`, code, name: quote.name, side: simSide, orderType: simOrderType, price: +price.toFixed(2), quantity, status: "pending", createdAt: new Date().toISOString() };
+    setSimOrders((items) => [order, ...items]); setSimMessage("委托已提交");
+    const crosses = simOrderType === "market" || (simSide === "buy" ? price >= quote.price : price <= quote.price);
+    if (crosses) setTimeout(() => fillSimOrder(order, quote.price), 0);
+  };
+  useEffect(() => { simCashRef.current = simCash; simPositionsRef.current = simPositions; }, [simCash, simPositions]);
+  useEffect(() => {
+    const text = simCode.trim();
+    if (!text) { setSimSuggestions([]); return; }
+    const timer = setTimeout(() => fetch(`/api/market?type=search&q=${encodeURIComponent(text)}`).then((response) => response.json()).then((json) => setSimSuggestions(json.results || [])).catch(() => setSimSuggestions([])), 220);
+    return () => clearTimeout(timer);
+  }, [simCode]);
+  useEffect(() => { const code = simCode.replace(/\D/g, "").slice(-6), quote = map[code]; if (quote?.price && simPriceCodeRef.current !== code) { simPriceCodeRef.current = code; setSimPrice(quote.price); } }, [simCode, quotes]);
+  useEffect(() => { setSimPositions((items) => { let changed = false; const next = items.map((position) => { if (position.buyDate !== simToday && position.available !== position.shares) { changed = true; return { ...position, available: position.shares }; } return position; }); return changed ? next : items; }); }, [simToday, simPositions.length]);
+  useEffect(() => { localStorage.setItem("wealth-simulator-v1", JSON.stringify({ cash: simCash, positions: simPositions, orders: simOrders })); }, [simCash, simPositions, simOrders]);
+  useEffect(() => {
+    simOrders.filter((order) => order.status === "pending").forEach((order) => { const quote = map[order.code]; if (!quote) return; const crosses = order.side === "buy" ? order.price >= quote.price : order.price <= quote.price; if (crosses) fillSimOrder(order, quote.price); });
   }, [quotes]);
   useEffect(() => {
     if (!alertSettings.enabled || !quotes.length) return;
@@ -1103,6 +1169,11 @@ export default function Home() {
     .map((x, i) => ({ x, i }))
     .filter(({ x }) => JSON.stringify(x).toLowerCase().includes(learnQ.toLowerCase()));
   const total = principal * Math.pow(1 + rate / 100, years);
+  const simMarketValue = simPositions.reduce((sum, position) => sum + (map[position.code]?.price || position.cost) * position.shares, 0);
+  const simFrozenCash = simOrders.filter((order) => order.status === "pending" && order.side === "buy").reduce((sum, order) => sum + order.price * order.quantity + simFee(order.price * order.quantity, "buy"), 0);
+  const simTotalAssets = simCash + simMarketValue;
+  const simProfit = simTotalAssets - 1000000;
+  const simQuote = map[simCode.replace(/\D/g, "").slice(-6)];
   return (
     <main className="terminal">
       <header>
@@ -1116,7 +1187,7 @@ export default function Home() {
             ["market", "市场"],
             ["radar", "雷达"],
             ["plans", "计划"],
-            ["backtest", "回测"],
+            ["backtest", "模拟"],
             ["watch", "自选"],
             ["portfolio", "持仓"],
             ["alerts", `预警${unreadAlerts ? ` ${unreadAlerts}` : ""}`],
@@ -1192,7 +1263,7 @@ export default function Home() {
                 {plan.levels && <div className="plan-levels"><div><small>突破触发</small><b>{plan.levels.entryTrigger}</b></div><div><small>回踩观察区</small><b>{plan.levels.pullbackLow}—{plan.levels.pullbackHigh}</b></div><div><small>结构失效</small><b className="down">{plan.levels.invalidPrice}</b></div><div><small>第一压力</small><b>{plan.levels.pressure}</b></div></div>}
                 {plan.components && <div className="plan-components">{([['市场',plan.components.market,15],['中期趋势',plan.components.midTrend,20],['短期结构',plan.components.shortStructure,15],['量价',plan.components.volumePrice,20],['动量',plan.components.momentum,15],['风控流动性',plan.components.riskLiquidity,15]] as [string,number,number][]).map(([label,value,max]) => <div key={label}><span>{label}<em>{value}/{max}</em></span><i><b style={{width:`${value/max*100}%`}} /></i></div>)}</div>}
                 {plan.rules ? <div className="plan-rules"><p><b>确认条件</b>{plan.rules.confirm}</p><p><b>回踩情景</b>{plan.rules.pullback}</p><p><b>失效条件</b>{plan.rules.invalid}</p></div> : <div className="plan-rules"><p>{plan.reasons.join("；")}</p></div>}
-                <footer><small>{plan.dataHealth === "stale" ? "⚠ 临时沿用缓存 · " : plan.dataHealth === "insufficient" ? "⚠ 连续取数失败 · " : ""}{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><div><button onClick={() => { setBacktestCode(plan.code); setBacktest(null); setTab("backtest"); }}>回测此股</button><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></div></footer>
+                <footer><small>{plan.dataHealth === "stale" ? "⚠ 临时沿用缓存 · " : plan.dataHealth === "insufficient" ? "⚠ 连续取数失败 · " : ""}{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><div><button onClick={() => { setSimCode(plan.code); setSimPrice(plan.price || 0); setSimSide("buy"); setTab("backtest"); }}>模拟买入</button><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></div></footer>
               </article>)}
               {!tradePlans.length && !plansLoading && <div className="empty"><b>暂无计划</b><span>请先在自选或持仓中添加股票。</span></div>}
             </section>
@@ -1200,6 +1271,43 @@ export default function Home() {
           </>
         )}
         {tab === "backtest" && (
+          <>
+            <div className="sim-head"><div><span className="eyebrow">PAPER TRADING</span><h1>模拟交易中心</h1><p>使用真实行情练习下单、撤单与仓位管理。账户、委托和成交保存在当前浏览器，本功能不会连接券商或产生真实交易。</p></div><button onClick={() => { if (window.confirm("确定重置模拟账户？持仓、委托和成交记录都会清空。")) { setSimCash(1000000); setSimPositions([]); setSimOrders([]); simProcessingRef.current.clear(); } }}>重置账户</button></div>
+            <section className="sim-summary">
+              <article><small>总资产</small><b>{money(simTotalAssets)}</b><span>初始资金 100万元</span></article>
+              <article><small>持仓市值</small><b>{money(simMarketValue)}</b><span>{simPositions.length}只证券</span></article>
+              <article><small>可用资金</small><b>{money(Math.max(0, simCash - simFrozenCash))}</b><span>冻结 {money(simFrozenCash)}</span></article>
+              <article><small>总盈亏</small><b className={simProfit >= 0 ? "up" : "down"}>{money(simProfit)}</b><span>{pct(simProfit / 1000000 * 100)}</span></article>
+            </section>
+            <div className="sim-layout">
+              <section className="panel sim-ticket">
+                <div className="sim-side"><button className={simSide === "buy" ? "buy active" : "buy"} onClick={() => setSimSide("buy")}>买入</button><button className={simSide === "sell" ? "sell active" : "sell"} onClick={() => setSimSide("sell")}>卖出</button></div>
+                <label>证券代码 / 名称<input list="sim-security-list" value={simCode} onChange={(event) => setSimCode(event.target.value)} placeholder="输入公司名、简称、拼音或6位代码" /><datalist id="sim-security-list">{simSuggestions.map((item) => <option key={`${item.market}-${item.code}`} value={item.code}>{item.name} · {item.market.toUpperCase()}</option>)}</datalist></label>
+                <div className="sim-order-types"><button className={simOrderType === "limit" ? "active" : ""} onClick={() => setSimOrderType("limit")}>限价委托</button><button className={simOrderType === "market" ? "active" : ""} onClick={() => setSimOrderType("market")}>市价模拟</button></div>
+                <label>委托价格<input type="number" min="0.01" step="0.01" disabled={simOrderType === "market"} value={simOrderType === "market" ? (simQuote?.price || 0) : simPrice} onChange={(event) => setSimPrice(+event.target.value)} /></label>
+                <label>委托数量<input type="number" min="100" step="100" value={simQuantity} onChange={(event) => setSimQuantity(+event.target.value)} /></label>
+                <div className="sim-quick">{[100,500,1000,5000].map((quantity) => <button key={quantity} onClick={() => setSimQuantity(quantity)}>{quantity}股</button>)}</div>
+                <button className={simSide === "buy" ? "sim-submit buy" : "sim-submit sell"} onClick={placeSimOrder}>{simSide === "buy" ? "提交买入委托" : "提交卖出委托"}</button>
+                {simMessage && <p className="sim-message">{simMessage}</p>}
+              </section>
+              <section className="panel sim-quote">
+                <small>实时行情 · 约5秒刷新</small><h2>{simQuote?.name || "请选择证券"} <em>{simQuote?.code || ""}</em></h2>
+                <div className="sim-last"><b>{simQuote?.price?.toFixed(2) || "—"}</b><span className={(simQuote?.changePct || 0) >= 0 ? "up" : "down"}>{simQuote ? pct(simQuote.changePct) : "—"}</span></div>
+                <div className="sim-quote-grid"><div><small>今开</small><b>{simQuote?.open?.toFixed(2) || "—"}</b></div><div><small>最高</small><b>{simQuote?.high?.toFixed(2) || "—"}</b></div><div><small>最低</small><b>{simQuote?.low?.toFixed(2) || "—"}</b></div><div><small>换手率</small><b>{simQuote ? `${simQuote.turnover.toFixed(2)}%` : "—"}</b></div></div>
+                <div className="sim-rules"><b>模拟撮合规则</b><p>市价委托按当前最新价模拟成交；限价买单在最新价不高于委托价时成交，限价卖单反之。买入100股整数手，卖出执行T+1可用数量约束。</p><small>这是学习型近似撮合，不模拟排队、部分成交、涨跌停封单、停牌及真实券商延迟。</small></div>
+              </section>
+            </div>
+            <section className="panel sim-ledger">
+              <div className="sim-tabs"><div><button className={simView === "positions" ? "active" : ""} onClick={() => setSimView("positions")}>持仓</button><button className={simView === "orders" ? "active" : ""} onClick={() => setSimView("orders")}>当日委托</button><button className={simView === "fills" ? "active" : ""} onClick={() => setSimView("fills")}>成交记录</button></div><small>佣金万3（最低5元）· 过户费估算 · 卖出印花税万5</small></div>
+              <div className="table-wrap"><table><thead>{simView === "positions" ? <tr><th>证券</th><th>持仓 / 可用</th><th>成本</th><th>最新</th><th>市值</th><th>持仓盈亏</th><th>操作</th></tr> : <tr><th>时间</th><th>证券</th><th>方向</th><th>类型</th><th>委托价 / 成交价</th><th>数量</th><th>费用</th><th>状态 / 操作</th></tr>}</thead><tbody>
+                {simView === "positions" && simPositions.map((position) => { const latest = map[position.code]?.price || position.cost, pnl = (latest-position.cost)*position.shares; return <tr key={position.code}><td><b>{position.name}</b><small>{position.code}</small></td><td>{position.shares} / {position.available}</td><td>{position.cost.toFixed(3)}</td><td>{latest.toFixed(2)}</td><td>{money(latest*position.shares)}</td><td className={pnl >= 0 ? "up" : "down"}>{money(pnl)}<small>{pct((latest/position.cost-1)*100)}</small></td><td><button onClick={() => { setSimCode(position.code); setSimSide("sell"); setSimQuantity(Math.max(100, position.available)); window.scrollTo({top:0,behavior:"smooth"}); }}>卖出</button></td></tr> })}
+                {simView !== "positions" && simOrders.filter((order) => simView === "orders" ? true : order.status === "filled").map((order) => <tr key={order.id}><td>{new Date(order.createdAt).toLocaleString("zh-CN")}</td><td><b>{order.name}</b><small>{order.code}</small></td><td className={order.side === "buy" ? "up" : "down"}>{order.side === "buy" ? "买入" : "卖出"}</td><td>{order.orderType === "market" ? "市价" : "限价"}</td><td>{order.price.toFixed(2)} / {order.filledPrice?.toFixed(2) || "—"}</td><td>{order.quantity}</td><td>{order.fee?.toFixed(2) || "—"}</td><td><span>{({pending:"已报",filled:"已成",cancelled:"已撤",rejected:"废单"} as Record<string,string>)[order.status]}{order.note ? ` · ${order.note}` : ""}</span>{order.status === "pending" && <button onClick={() => setSimOrders((items) => items.map((item) => item.id === order.id ? {...item,status:"cancelled"} : item))}>撤单</button>}</td></tr>)}
+              </tbody></table></div>
+              {((simView === "positions" && !simPositions.length) || (simView === "orders" && !simOrders.length) || (simView === "fills" && !simOrders.some((order) => order.status === "filled"))) && <div className="empty"><b>{simView === "positions" ? "暂无模拟持仓" : simView === "orders" ? "暂无委托" : "暂无成交"}</b><span>先在上方交易面板提交一笔模拟委托。</span></div>}
+            </section>
+          </>
+        )}
+        {tab === "backtest-history" && (
           <>
             <div className="backtest-head"><div><span className="eyebrow">HISTORICAL VERIFICATION</span><h1>策略回测实验室</h1><p>使用真实前复权日线，严格按下一交易日开盘成交，计入手续费和滑点；用于验证规则，不代表未来表现。</p></div><button onClick={runBacktest} disabled={backtestLoading}>{backtestLoading ? "计算中…" : "运行回测"}</button></div>
             <section className="panel backtest-controls">
