@@ -100,11 +100,14 @@ export async function GET(request: Request) {
             };
             const score = +Object.values(components).reduce((sum, value) => sum + value, 0).toFixed(1);
             const confirmed = price >= entryTrigger && volumeRatio >= 1.2 && ma20 > ma60;
-            const invalid = price < invalidPrice || ma20 < ma60 * .97;
-            const status = invalid ? "invalid" : confirmed ? "confirmed" : score >= 65 ? "watch" : "neutral";
-            const statusLabel = invalid ? "结构失效" : confirmed ? "条件确认" : score >= 65 ? "重点观察" : "普通观察";
+            // “结构失效”是计划生命周期状态，只有曾进入观察/确认后才有意义。
+            // API 只返回当前结构事实，由前端结合上一次有效状态并连续确认后决定是否失效。
+            const structureBroken = price < invalidPrice;
+            const trendWeak = ma20 < ma60 * .97;
+            const status = confirmed ? "confirmed" : score >= 65 ? "watch" : "neutral";
+            const statusLabel = confirmed ? "条件确认" : score >= 65 ? "重点观察" : "普通观察";
             const reasons = [price > ma20 ? "价格位于MA20上方" : "价格尚未站上MA20", ma20 > ma60 ? "MA20高于MA60" : "MA20尚未高于MA60", volumeRatio >= 1.2 ? `成交量为20日均量${volumeRatio.toFixed(2)}倍` : `量能仅为20日均量${volumeRatio.toFixed(2)}倍`, riskReward === null ? "上方历史压力不足以形成有效风险收益测算" : `第一压力对应风险收益比约${riskReward}`];
-            plans.push({ code, name: String(quote.f14 || code), price, changePct, turnover, amount, status, statusLabel, score, asOf: latest.date, adjustment: "前复权", sampleSize: bars.length, marketChange: +marketChange.toFixed(2), components, indicators: { ma5: +ma5.toFixed(2), ma10: +ma10.toFixed(2), ma20: +ma20.toFixed(2), ma60: +ma60.toFixed(2), ma120: +ma120.toFixed(2), volumeRatio: +volumeRatio.toFixed(2), atr14: +atr14.toFixed(2) }, levels: { entryTrigger, pullbackLow: +(ma20 * .99).toFixed(2), pullbackHigh: +(ma20 * 1.01).toFixed(2), invalidPrice, pressure, riskReward }, rules: { confirm: `价格不低于${entryTrigger}且量能达到20日均量1.2倍，同时MA20高于MA60`, pullback: `回踩${(ma20 * .99).toFixed(2)}—${(ma20 * 1.01).toFixed(2)}区间后企稳，仍需量价确认`, invalid: `跌破${invalidPrice}或MA20相对MA60明显转弱` }, reasons });
+            plans.push({ code, name: String(quote.f14 || code), price, changePct, turnover, amount, status, statusLabel, score, asOf: latest.date, adjustment: "前复权", sampleSize: bars.length, marketChange: +marketChange.toFixed(2), dataHealth: "ok", structureBroken, trendWeak, components, indicators: { ma5: +ma5.toFixed(2), ma10: +ma10.toFixed(2), ma20: +ma20.toFixed(2), ma60: +ma60.toFixed(2), ma120: +ma120.toFixed(2), volumeRatio: +volumeRatio.toFixed(2), atr14: +atr14.toFixed(2) }, levels: { entryTrigger, pullbackLow: +(ma20 * .99).toFixed(2), pullbackHigh: +(ma20 * 1.01).toFixed(2), invalidPrice, pressure, riskReward }, rules: { confirm: `价格不低于${entryTrigger}且量能达到20日均量1.2倍，同时MA20高于MA60`, pullback: `回踩${(ma20 * .99).toFixed(2)}—${(ma20 * 1.01).toFixed(2)}区间后企稳，仍需量价确认`, invalid: `计划进入重点观察或条件确认后，连续两次跌破${invalidPrice}才判定结构失效` }, reasons });
           } catch (planError) { plans.push({ code, name: String(quoteMap.get(code)?.f14 || code), status: "insufficient", statusLabel: "数据不足", score: null, reasons: [planError instanceof Error ? planError.message : "K线数据不可用"] }); }
         }));
       }

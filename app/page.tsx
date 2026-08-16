@@ -50,7 +50,7 @@ type AlertSettings = {
 type RadarBoard = { kind: "industry" | "concept"; code: string; name: string; changePct: number; turnover: number; marketCap: number; mainNetInflow: number; upCount: number; downCount: number; leaderName: string; leaderCode: string; leaderChangePct: number; heatScore: number; components: { momentum: number; breadth: number; flow: number; activity: number } };
 type LimitUpStock = { code: string; market: number; name: string; price: number; changePct: number; amount: number; floatMarketCap: number; marketCap: number; turnover: number; streak: number; firstSealTime: string; lastSealTime: string; sealedAmount: number; openCount: number; industry: string; streakDays: number };
 type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
-type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
+type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; dataHealth?: "ok" | "stale" | "insufficient"; structureBroken?: boolean; trendWeak?: boolean; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
 type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
@@ -512,7 +512,10 @@ export default function Home() {
     [rate, setRate] = useState(8),
     [years, setYears] = useState(10);
   const quoteHistoryRef = useRef<Record<string, { price: number; at: number }>>({});
+  const tradePlansRef = useRef<TradePlan[]>([]);
   const planStatusRef = useRef<Record<string, string>>({});
+  const planBreakCountRef = useRef<Record<string, number>>({});
+  const planFailureCountRef = useRef<Record<string, number>>({});
   useEffect(() => {
     try {
       const oldWatch =
@@ -535,8 +538,9 @@ export default function Home() {
         ...JSON.parse(localStorage.getItem("wealth-alert-settings-v1") || "{}"),
       });
       if ("Notification" in window) setNotificationPermission(Notification.permission);
-      setPlanEvents(JSON.parse(localStorage.getItem("wealth-plan-events-v1") || "[]"));
-      planStatusRef.current = JSON.parse(localStorage.getItem("wealth-plan-status-v1") || "{}");
+      // v2 starts with the corrected lifecycle model; old “数据不足/误判失效” logs are intentionally not migrated.
+      setPlanEvents(JSON.parse(localStorage.getItem("wealth-plan-events-v2") || "[]"));
+      planStatusRef.current = JSON.parse(localStorage.getItem("wealth-plan-status-v2") || "{}");
     } catch {}
   }, []);
   const codes = useMemo(
@@ -589,22 +593,42 @@ export default function Home() {
       const response = await fetch(`/api/market?type=plans&codes=${planCodes.join(",")}`, { cache: "no-store" });
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || "交易计划请求失败");
-      const nextPlans = (json.plans || []) as TradePlan[];
+      const receivedPlans = (json.plans || []) as TradePlan[];
+      const cachedPlans = new Map(tradePlansRef.current.map((plan) => [plan.code, plan]));
+      const nextPlans = receivedPlans.map((incoming) => {
+        if (incoming.status === "insufficient") {
+          const failures = (planFailureCountRef.current[incoming.code] || 0) + 1;
+          planFailureCountRef.current[incoming.code] = failures;
+          const cached = cachedPlans.get(incoming.code);
+          if (cached && failures < 3) return { ...cached, dataHealth: "stale" as const, reasons: [...cached.reasons.filter((reason) => !reason.startsWith("本轮数据获取失败")), `本轮数据获取失败（连续${failures}次），暂时沿用上次有效结果。`] };
+          return { ...incoming, dataHealth: "insufficient" as const };
+        }
+        planFailureCountRef.current[incoming.code] = 0;
+        const previous = planStatusRef.current[incoming.code];
+        const hadActivePlan = previous === "watch" || previous === "confirmed" || previous === "invalid";
+        const breaks = incoming.structureBroken && hadActivePlan ? (planBreakCountRef.current[incoming.code] || 0) + 1 : 0;
+        planBreakCountRef.current[incoming.code] = breaks;
+        if (breaks >= 2) return { ...incoming, status: "invalid" as const, statusLabel: "结构失效" };
+        if (incoming.structureBroken && hadActivePlan) return { ...incoming, status: previous as TradePlan["status"], statusLabel: previous === "confirmed" ? "条件确认（待复核）" : previous === "invalid" ? "结构失效" : "重点观察（待复核）" };
+        return incoming;
+      });
       const nextStatuses = { ...planStatusRef.current };
       const events: PlanEvent[] = [];
       nextPlans.forEach((plan) => {
         const previous = planStatusRef.current[plan.code];
-        if (previous && previous !== plan.status) events.push({ id: `${Date.now()}-${plan.code}-${plan.status}`, code: plan.code, name: plan.name, from: previous, to: plan.status, createdAt: new Date().toISOString(), price: plan.price });
-        nextStatuses[plan.code] = plan.status;
+        const meaningful = plan.status !== "insufficient" && previous !== "insufficient";
+        if (meaningful && previous && previous !== plan.status) events.push({ id: `${Date.now()}-${plan.code}-${plan.status}`, code: plan.code, name: plan.name, from: previous, to: plan.status, createdAt: new Date().toISOString(), price: plan.price });
+        if (plan.status !== "insufficient") nextStatuses[plan.code] = plan.status;
       });
       planStatusRef.current = nextStatuses;
-      localStorage.setItem("wealth-plan-status-v1", JSON.stringify(nextStatuses));
-      if (events.length) setPlanEvents((current) => { const next = [...events, ...current].slice(0, 100); localStorage.setItem("wealth-plan-events-v1", JSON.stringify(next)); return next; });
+      localStorage.setItem("wealth-plan-status-v2", JSON.stringify(nextStatuses));
+      if (events.length) setPlanEvents((current) => { const next = [...events, ...current].slice(0, 100); localStorage.setItem("wealth-plan-events-v2", JSON.stringify(next)); return next; });
+      tradePlansRef.current = nextPlans;
       setTradePlans(nextPlans); setPlansUpdatedAt(json.fetchedAt || new Date().toISOString());
       localStorage.setItem("wealth-plans-cache-v1", JSON.stringify({ plans: nextPlans, fetchedAt: json.fetchedAt }));
     } catch (planFailure) {
       setPlansError(planFailure instanceof Error ? planFailure.message : "交易计划请求失败");
-      try { const cached = JSON.parse(localStorage.getItem("wealth-plans-cache-v1") || "null"); if (cached?.plans) { setTradePlans(cached.plans); setPlansUpdatedAt(cached.fetchedAt || ""); } } catch {}
+      try { const cached = JSON.parse(localStorage.getItem("wealth-plans-cache-v1") || "null"); if (cached?.plans) { tradePlansRef.current = cached.plans; setTradePlans(cached.plans); setPlansUpdatedAt(cached.fetchedAt || ""); } } catch {}
     } finally { setPlansLoading(false); }
   };
   useEffect(() => {
@@ -1134,11 +1158,11 @@ export default function Home() {
                 {plan.levels && <div className="plan-levels"><div><small>突破触发</small><b>{plan.levels.entryTrigger}</b></div><div><small>回踩观察区</small><b>{plan.levels.pullbackLow}—{plan.levels.pullbackHigh}</b></div><div><small>结构失效</small><b className="down">{plan.levels.invalidPrice}</b></div><div><small>第一压力</small><b>{plan.levels.pressure}</b></div></div>}
                 {plan.components && <div className="plan-components">{([['市场',plan.components.market,15],['中期趋势',plan.components.midTrend,20],['短期结构',plan.components.shortStructure,15],['量价',plan.components.volumePrice,20],['动量',plan.components.momentum,15],['风控流动性',plan.components.riskLiquidity,15]] as [string,number,number][]).map(([label,value,max]) => <div key={label}><span>{label}<em>{value}/{max}</em></span><i><b style={{width:`${value/max*100}%`}} /></i></div>)}</div>}
                 {plan.rules ? <div className="plan-rules"><p><b>确认条件</b>{plan.rules.confirm}</p><p><b>回踩情景</b>{plan.rules.pullback}</p><p><b>失效条件</b>{plan.rules.invalid}</p></div> : <div className="plan-rules"><p>{plan.reasons.join("；")}</p></div>}
-                <footer><small>{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></footer>
+                <footer><small>{plan.dataHealth === "stale" ? "⚠ 临时沿用缓存 · " : plan.dataHealth === "insufficient" ? "⚠ 连续取数失败 · " : ""}{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></footer>
               </article>)}
               {!tradePlans.length && !plansLoading && <div className="empty"><b>暂无计划</b><span>请先在自选或持仓中添加股票。</span></div>}
             </section>
-            <section className="panel plan-events"><div className="section-head"><div><small>状态留痕</small><h2>实时确认日志</h2></div><button onClick={() => { setPlanEvents([]); localStorage.removeItem("wealth-plan-events-v1"); }}>清空日志</button></div>{planEvents.length ? planEvents.slice(0,20).map((event) => <div key={event.id}><time>{new Date(event.createdAt).toLocaleString("zh-CN")}</time><b>{event.name} {event.code}</b><span>{({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.from] || event.from} → {({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.to] || event.to}</span><em>{event.price?.toFixed(2) || "—"}</em></div>) : <p className="news-note">状态发生变化后会记录时间、价格和迁移方向；首次载入不会制造事件。</p>}</section>
+            <section className="panel plan-events"><div className="section-head"><div><small>状态留痕</small><h2>实时确认日志</h2></div><button onClick={() => { setPlanEvents([]); localStorage.removeItem("wealth-plan-events-v2"); }}>清空日志</button></div>{planEvents.length ? planEvents.slice(0,20).map((event) => <div key={event.id}><time>{new Date(event.createdAt).toLocaleString("zh-CN")}</time><b>{event.name} {event.code}</b><span>{({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.from] || event.from} → {({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.to] || event.to}</span><em>{event.price?.toFixed(2) || "—"}</em></div>) : <p className="news-note">仅记录有效策略状态变化；接口闪断和数据不足不会制造事件。</p>}</section>
           </>
         )}
         {tab === "market" && (
