@@ -51,6 +51,66 @@ export async function GET(request: Request) {
       const industryStats = Array.from(limitUp.reduce((map, row) => { const hit = map.get(row.industry) || { name: row.industry, count: 0, maxStreak: 0, sealedAmount: 0 }; hit.count += 1; hit.maxStreak = Math.max(hit.maxStreak, row.streak); hit.sealedAmount += row.sealedAmount; map.set(row.industry, hit); return map; }, new Map<string, { name: string; count: number; maxStreak: number; sealedAmount: number }>()).values()).sort((a, b) => b.count - a.count || b.maxStreak - a.maxStreak).slice(0, 15);
       return Response.json({ ok: true, source: "东方财富板块行情 / 涨停池", fetchedAt: new Date().toISOString(), tradingDate: String(limitJson.data?.qdate || ""), methodology: { formula: "热度=涨幅动量35%+上涨宽度25%+主力净流25%+换手活跃15%", note: "分数用于同批板块相对比较，不代表收益预测。" }, boards: { industry: normalizeBoards(industryRows, "industry"), concept: normalizeBoards(conceptRows, "concept") }, limitUp: { total: limitJson.data?.tc || limitUp.length, stocks: limitUp, ladder, industries: industryStats } });
     }
+    if (type === "backtest") {
+      const code = (url.searchParams.get("code") || "").replace(/\D/g, "").slice(-6);
+      if (!/^\d{6}$/.test(code)) return Response.json({ ok: false, error: "股票代码无效" }, { status: 400 });
+      const initial = Math.max(10000, Math.min(100000000, Number(url.searchParams.get("initial")) || 100000));
+      const feeRate = Math.max(0, Math.min(.01, Number(url.searchParams.get("fee")) || .0003));
+      const slippage = Math.max(0, Math.min(.03, Number(url.searchParams.get("slippage")) || .001));
+      type TestBar = { date: string; open: number; close: number; high: number; low: number; volume: number };
+      let bars: TestBar[] = [];
+      try {
+        const body = await fetchText(`${EM_KLINE}?secid=${secid(code)}&klt=101&fqt=1&beg=0&end=20500101&lmt=600&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56`, headers);
+        const json = JSON.parse(body) as { data?: { name?: string; klines?: string[] } };
+        bars = (json.data?.klines || []).map((line) => { const row = line.split(","); return { date: row[0], open: +row[1], close: +row[2], high: +row[3], low: +row[4], volume: +row[5] }; }).filter((bar) => Number.isFinite(bar.close) && bar.close > 0);
+      } catch {}
+      if (bars.length < 180) {
+        const symbol = txSymbol(code), body = await fetchText(`http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${symbol},day,,,600,qfq`, headers);
+        const json = JSON.parse(body) as { data?: Record<string, Record<string, string[][]>> }, node = json.data?.[symbol] || {};
+        bars = (node.qfqday || node.day || []).map((row) => ({ date: row[0], open: +row[1], close: +row[2], high: +row[3], low: +row[4], volume: +row[5] })).filter((bar) => Number.isFinite(bar.close) && bar.close > 0);
+      }
+      if (bars.length < 180) return Response.json({ ok: false, error: `仅取得${bars.length}条有效日线，低于180条回测最低口径` }, { status: 422 });
+      const quoteBody = await fetchText(`${EM_QUOTE}?fltt=2&secids=${secid(code)}&fields=f12,f14`, headers);
+      const quoteJson = JSON.parse(quoteBody) as { data?: { diff?: Record<string, string>[] } };
+      const name = String(quoteJson.data?.diff?.[0]?.f14 || code);
+      type TestTrade = { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string };
+      const trades: TestTrade[] = [], curve: { date: string; equity: number; benchmark: number; drawdown: number }[] = [];
+      let cash = initial, shares = 0, entryPrice = 0, entryDate = "", entryIndex = 0, pending: "buy" | "sell" | null = null, exitReason = "", peak = initial;
+      const maAt = (index: number, days: number) => bars.slice(index - days + 1, index + 1).reduce((sum, bar) => sum + bar.close, 0) / days;
+      const benchmarkBase = bars[60].close;
+      for (let i = 60; i < bars.length; i++) {
+        const bar = bars[i];
+        if (pending === "buy" && !shares) {
+          const fill = bar.open * (1 + slippage), maxShares = Math.floor(cash / (fill * (1 + feeRate)) / 100) * 100;
+          if (maxShares > 0) { shares = maxShares; entryPrice = fill; entryDate = bar.date; entryIndex = i; cash -= shares * fill * (1 + feeRate); }
+          pending = null;
+        } else if (pending === "sell" && shares) {
+          const fill = bar.open * (1 - slippage), proceeds = shares * fill * (1 - feeRate), cost = shares * entryPrice * (1 + feeRate), pnl = proceeds - cost;
+          trades.push({ entryDate, exitDate: bar.date, entryPrice: +entryPrice.toFixed(2), exitPrice: +fill.toFixed(2), shares, pnl: +pnl.toFixed(2), returnPct: +(pnl / cost * 100).toFixed(2), holdingDays: i - entryIndex, reason: exitReason });
+          cash += proceeds; shares = 0; entryPrice = 0; pending = null;
+        }
+        const ma20 = maAt(i, 20), ma60 = maAt(i, 60), prior20 = bars.slice(i - 20, i), high20 = Math.max(...prior20.map((x) => x.high));
+        const avgVolume20 = prior20.reduce((sum, x) => sum + x.volume, 0) / 20, volumeRatio = avgVolume20 ? bar.volume / avgVolume20 : 0;
+        if (!shares && i < bars.length - 1 && bar.close > high20 && ma20 > ma60 && volumeRatio >= 1.2) pending = "buy";
+        if (shares && i < bars.length - 1) {
+          if (bar.close <= entryPrice * .92) { pending = "sell"; exitReason = "收盘跌破8%风险线"; }
+          else if (bar.close < ma20) { pending = "sell"; exitReason = "收盘跌破MA20"; }
+          else if (i - entryIndex >= 20) { pending = "sell"; exitReason = "持有满20个交易日"; }
+        }
+        const equity = cash + shares * bar.close, drawdown = peak ? (equity / peak - 1) * 100 : 0; peak = Math.max(peak, equity);
+        curve.push({ date: bar.date, equity: +equity.toFixed(2), benchmark: +(initial * bar.close / benchmarkBase).toFixed(2), drawdown: +Math.min(0, drawdown).toFixed(2) });
+      }
+      if (shares) {
+        const bar = bars.at(-1)!, proceeds = shares * bar.close * (1 - feeRate), cost = shares * entryPrice * (1 + feeRate), pnl = proceeds - cost;
+        trades.push({ entryDate, exitDate: bar.date, entryPrice: +entryPrice.toFixed(2), exitPrice: +bar.close.toFixed(2), shares, pnl: +pnl.toFixed(2), returnPct: +(pnl / cost * 100).toFixed(2), holdingDays: bars.length - 1 - entryIndex, reason: "回测期末按收盘价结算" });
+        cash += proceeds; shares = 0;
+        if (curve.length) curve[curve.length - 1].equity = +cash.toFixed(2);
+      }
+      const finalEquity = cash, totalReturn = (finalEquity / initial - 1) * 100, years = Math.max(1 / 252, curve.length / 252), annualized = (Math.pow(finalEquity / initial, 1 / years) - 1) * 100;
+      const maxDrawdown = Math.min(0, ...curve.map((x) => x.drawdown)), wins = trades.filter((trade) => trade.pnl > 0), losses = trades.filter((trade) => trade.pnl <= 0);
+      const grossProfit = wins.reduce((sum, trade) => sum + trade.pnl, 0), grossLoss = Math.abs(losses.reduce((sum, trade) => sum + trade.pnl, 0));
+      return Response.json({ ok: true, source: "东方财富/腾讯前复权日线", fetchedAt: new Date().toISOString(), code, name, range: { start: bars[60].date, end: bars.at(-1)!.date, samples: curve.length }, parameters: { initial, feeRate, slippage, entry: "收盘突破前20日最高价、MA20>MA60、量比≥1.2；下一交易日开盘成交", exit: "收盘跌破MA20、跌破成本8%或持有20日；下一交易日开盘成交", lotSize: 100 }, metrics: { finalEquity: +finalEquity.toFixed(2), totalReturn: +totalReturn.toFixed(2), annualized: +annualized.toFixed(2), maxDrawdown: +maxDrawdown.toFixed(2), trades: trades.length, winRate: trades.length ? +(wins.length / trades.length * 100).toFixed(2) : 0, profitFactor: grossLoss ? +(grossProfit / grossLoss).toFixed(2) : grossProfit ? null : 0, benchmarkReturn: +(curve.at(-1)!.benchmark / initial * 100 - 100).toFixed(2) }, curve, trades: trades.reverse() });
+    }
     if (type === "plans") {
       const codes = Array.from(new Set((url.searchParams.get("codes") || "").split(",").map((value) => value.replace(/\D/g, "").slice(-6)).filter((value) => /^\d{6}$/.test(value)))).slice(0, 20);
       if (!codes.length) return Response.json({ ok: true, plans: [] });

@@ -53,6 +53,7 @@ type LimitUpStock = { code: string; market: number; name: string; price: number;
 type RadarData = { source: string; fetchedAt: string; tradingDate: string; methodology: { formula: string; note: string }; boards: { industry: RadarBoard[]; concept: RadarBoard[] }; limitUp: { total: number; stocks: LimitUpStock[]; ladder: { level: number; stocks: LimitUpStock[] }[]; industries: { name: string; count: number; maxStreak: number; sealedAmount: number }[] } };
 type TradePlan = { code: string; name: string; price?: number; changePct?: number; turnover?: number; amount?: number; status: "confirmed" | "watch" | "neutral" | "invalid" | "insufficient"; statusLabel: string; score: number | null; asOf?: string; adjustment?: string; sampleSize?: number; marketChange?: number; dataHealth?: "ok" | "stale" | "insufficient"; structureBroken?: boolean; trendWeak?: boolean; components?: { market: number; midTrend: number; shortStructure: number; volumePrice: number; momentum: number; riskLiquidity: number }; indicators?: { ma5: number; ma10: number; ma20: number; ma60: number; ma120: number; volumeRatio: number; atr14: number }; levels?: { entryTrigger: number; pullbackLow: number; pullbackHigh: number; invalidPrice: number; pressure: number; riskReward: number | null }; rules?: { confirm: string; pullback: string; invalid: string }; reasons: string[] };
 type PlanEvent = { id: string; code: string; name: string; from: string; to: string; createdAt: string; price?: number };
+type BacktestResult = { source: string; fetchedAt: string; code: string; name: string; range: { start: string; end: string; samples: number }; parameters: { initial: number; feeRate: number; slippage: number; entry: string; exit: string; lotSize: number }; metrics: { finalEquity: number; totalReturn: number; annualized: number; maxDrawdown: number; trades: number; winRate: number; profitFactor: number | null; benchmarkReturn: number }; curve: { date: string; equity: number; benchmark: number; drawdown: number }[]; trades: { entryDate: string; exitDate: string; entryPrice: number; exitPrice: number; shares: number; pnl: number; returnPct: number; holdingDays: number; reason: string }[] };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
   changePct: 3,
@@ -422,6 +423,14 @@ function PriceChart({ bars, mode }: { bars: Bar[]; mode: string }) {
   );
 }
 
+function EquityChart({ data }: { data: BacktestResult["curve"] }) {
+  if (!data.length) return <div className="empty"><b>暂无净值数据</b></div>;
+  const sampled = data.filter((_, i) => i % Math.max(1, Math.floor(data.length / 180)) === 0 || i === data.length - 1);
+  const values = sampled.flatMap((x) => [x.equity, x.benchmark]), low = Math.min(...values), high = Math.max(...values), span = high - low || 1;
+  const points = (key: "equity" | "benchmark") => sampled.map((x, i) => `${i / Math.max(1, sampled.length - 1) * 100},${90 - (x[key] - low) / span * 80}`).join(" ");
+  return <div className="equity-chart"><div><span><i className="strategy-line" />策略净值</span><span><i className="benchmark-line" />同期持有</span><small>{data[0].date} — {data.at(-1)?.date}</small></div><svg viewBox="0 0 100 100" preserveAspectRatio="none"><line x1="0" y1="90" x2="100" y2="90"/><polyline className="benchmark" points={points("benchmark")} /><polyline className="strategy-equity" points={points("equity")} /></svg><footer><span>{money(low)}</span><span>{money(high)}</span></footer></div>;
+}
+
 export default function Home() {
   const [tab, setTab] = useState("market"),
     [quotes, setQuotes] = useState<Quote[]>([]),
@@ -512,6 +521,13 @@ export default function Home() {
     [plansError, setPlansError] = useState(""),
     [plansUpdatedAt, setPlansUpdatedAt] = useState(""),
     [planFilter, setPlanFilter] = useState<"all" | TradePlan["status"]>("all"),
+    [backtestCode, setBacktestCode] = useState("600519"),
+    [backtestInitial, setBacktestInitial] = useState(100000),
+    [backtestFee, setBacktestFee] = useState(0.03),
+    [backtestSlippage, setBacktestSlippage] = useState(0.1),
+    [backtest, setBacktest] = useState<BacktestResult | null>(null),
+    [backtestLoading, setBacktestLoading] = useState(false),
+    [backtestError, setBacktestError] = useState(""),
     [learnQ, setLearnQ] = useState(""),
     [lesson, setLesson] = useState(0),
     [principal, setPrincipal] = useState(100000),
@@ -636,6 +652,17 @@ export default function Home() {
       setPlansError(planFailure instanceof Error ? planFailure.message : "交易计划请求失败");
       try { const cached = JSON.parse(localStorage.getItem("wealth-plans-cache-v1") || "null"); if (cached?.plans) { tradePlansRef.current = cached.plans; setTradePlans(cached.plans); setPlansUpdatedAt(cached.fetchedAt || ""); } } catch {}
     } finally { setPlansLoading(false); }
+  };
+  const runBacktest = async () => {
+    const code = backtestCode.replace(/\D/g, "").slice(-6);
+    if (!/^\d{6}$/.test(code)) { setBacktestError("请输入6位股票代码"); return; }
+    setBacktestLoading(true); setBacktestError("");
+    try {
+      const response = await fetch(`/api/market?type=backtest&code=${code}&initial=${backtestInitial}&fee=${backtestFee / 100}&slippage=${backtestSlippage / 100}`, { cache: "no-store" });
+      const json = await response.json(); if (!json.ok) throw new Error(json.error || "回测失败");
+      setBacktest(json); localStorage.setItem(`wealth-backtest-v1:${code}`, JSON.stringify(json));
+    } catch (failure) { setBacktestError(failure instanceof Error ? failure.message : "回测失败"); }
+    finally { setBacktestLoading(false); }
   };
   useEffect(() => {
     refresh();
@@ -1089,6 +1116,7 @@ export default function Home() {
             ["market", "市场"],
             ["radar", "雷达"],
             ["plans", "计划"],
+            ["backtest", "回测"],
             ["watch", "自选"],
             ["portfolio", "持仓"],
             ["alerts", `预警${unreadAlerts ? ` ${unreadAlerts}` : ""}`],
@@ -1164,11 +1192,37 @@ export default function Home() {
                 {plan.levels && <div className="plan-levels"><div><small>突破触发</small><b>{plan.levels.entryTrigger}</b></div><div><small>回踩观察区</small><b>{plan.levels.pullbackLow}—{plan.levels.pullbackHigh}</b></div><div><small>结构失效</small><b className="down">{plan.levels.invalidPrice}</b></div><div><small>第一压力</small><b>{plan.levels.pressure}</b></div></div>}
                 {plan.components && <div className="plan-components">{([['市场',plan.components.market,15],['中期趋势',plan.components.midTrend,20],['短期结构',plan.components.shortStructure,15],['量价',plan.components.volumePrice,20],['动量',plan.components.momentum,15],['风控流动性',plan.components.riskLiquidity,15]] as [string,number,number][]).map(([label,value,max]) => <div key={label}><span>{label}<em>{value}/{max}</em></span><i><b style={{width:`${value/max*100}%`}} /></i></div>)}</div>}
                 {plan.rules ? <div className="plan-rules"><p><b>确认条件</b>{plan.rules.confirm}</p><p><b>回踩情景</b>{plan.rules.pullback}</p><p><b>失效条件</b>{plan.rules.invalid}</p></div> : <div className="plan-rules"><p>{plan.reasons.join("；")}</p></div>}
-                <footer><small>{plan.dataHealth === "stale" ? "⚠ 临时沿用缓存 · " : plan.dataHealth === "insufficient" ? "⚠ 连续取数失败 · " : ""}{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></footer>
+                <footer><small>{plan.dataHealth === "stale" ? "⚠ 临时沿用缓存 · " : plan.dataHealth === "insufficient" ? "⚠ 连续取数失败 · " : ""}{plan.adjustment || "—"} · {plan.sampleSize || 0}个样本 · 数据日 {plan.asOf || "—"}</small><div><button onClick={() => { setBacktestCode(plan.code); setBacktest(null); setTab("backtest"); }}>回测此股</button><button onClick={() => { setSelected(plan.code); setTab("market"); }}>查看K线与盘口</button></div></footer>
               </article>)}
               {!tradePlans.length && !plansLoading && <div className="empty"><b>暂无计划</b><span>请先在自选或持仓中添加股票。</span></div>}
             </section>
             <section className="panel plan-events"><div className="section-head"><div><small>状态留痕</small><h2>实时确认日志</h2></div><button onClick={() => { setPlanEvents([]); localStorage.removeItem("wealth-plan-events-v2"); }}>清空日志</button></div>{planEvents.length ? planEvents.slice(0,20).map((event) => <div key={event.id}><time>{new Date(event.createdAt).toLocaleString("zh-CN")}</time><b>{event.name} {event.code}</b><span>{({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.from] || event.from} → {({confirmed:"条件确认",watch:"重点观察",neutral:"普通观察",invalid:"结构失效",insufficient:"数据不足"} as Record<string,string>)[event.to] || event.to}</span><em>{event.price?.toFixed(2) || "—"}</em></div>) : <p className="news-note">仅记录有效策略状态变化；接口闪断和数据不足不会制造事件。</p>}</section>
+          </>
+        )}
+        {tab === "backtest" && (
+          <>
+            <div className="backtest-head"><div><span className="eyebrow">HISTORICAL VERIFICATION</span><h1>策略回测实验室</h1><p>使用真实前复权日线，严格按下一交易日开盘成交，计入手续费和滑点；用于验证规则，不代表未来表现。</p></div><button onClick={runBacktest} disabled={backtestLoading}>{backtestLoading ? "计算中…" : "运行回测"}</button></div>
+            <section className="panel backtest-controls">
+              <label>股票代码<input value={backtestCode} onChange={(e) => setBacktestCode(e.target.value)} placeholder="例如 600519" /></label>
+              <label>初始资金<input type="number" min="10000" value={backtestInitial} onChange={(e) => setBacktestInitial(+e.target.value)} /></label>
+              <label>单边手续费（%）<input type="number" min="0" step="0.01" value={backtestFee} onChange={(e) => setBacktestFee(+e.target.value)} /></label>
+              <label>滑点（%）<input type="number" min="0" step="0.05" value={backtestSlippage} onChange={(e) => setBacktestSlippage(+e.target.value)} /></label>
+            </section>
+            {backtestError && <div className="ai-error">{backtestError} · 数据不足时不会生成模拟结果</div>}
+            {!backtest && !backtestLoading && <section className="panel backtest-intro"><h2>固定规则 v1</h2><div><article><b>入场</b><p>收盘突破此前20日最高价、MA20高于MA60且当日量比不低于1.2，下一交易日开盘买入。</p></article><article><b>退出</b><p>收盘跌破MA20、相对成本下跌8%或持有满20个交易日，下一交易日开盘卖出。</p></article><article><b>约束</b><p>A股100股整数手，满仓单标的；手续费与滑点按设置双边计算，不使用未来数据。</p></article></div></section>}
+            {backtest && <>
+              <div className="backtest-title"><div><small>{backtest.source}</small><h2>{backtest.name} · {backtest.code}</h2><p>{backtest.range.start} 至 {backtest.range.end} · {backtest.range.samples}个交易日样本</p></div><span>更新 {new Date(backtest.fetchedAt).toLocaleString("zh-CN")}</span></div>
+              <section className="backtest-metrics">
+                <article><small>总收益</small><b className={backtest.metrics.totalReturn >= 0 ? "up" : "down"}>{pct(backtest.metrics.totalReturn)}</b><span>同期持有 {pct(backtest.metrics.benchmarkReturn)}</span></article>
+                <article><small>年化收益</small><b>{pct(backtest.metrics.annualized)}</b><span>期末 {money(backtest.metrics.finalEquity)}</span></article>
+                <article><small>最大回撤</small><b className="down">{pct(backtest.metrics.maxDrawdown)}</b><span>峰值至谷底</span></article>
+                <article><small>胜率</small><b>{backtest.metrics.winRate.toFixed(2)}%</b><span>{backtest.metrics.trades}笔完整交易</span></article>
+                <article><small>盈亏因子</small><b>{backtest.metrics.profitFactor ?? "∞"}</b><span>总盈利 ÷ 总亏损</span></article>
+              </section>
+              <section className="panel backtest-curve"><div className="section-head"><div><small>净值对照</small><h2>策略与同期持有</h2></div></div><EquityChart data={backtest.curve} /></section>
+              <section className="panel backtest-rules"><h2>本次参数与可复核口径</h2><div><p><b>入场：</b>{backtest.parameters.entry}</p><p><b>退出：</b>{backtest.parameters.exit}</p><p><b>成本：</b>单边手续费 {(backtest.parameters.feeRate*100).toFixed(3)}%，滑点 {(backtest.parameters.slippage*100).toFixed(3)}%，100股整数手。</p></div><small>回测只检验这套固定规则在该历史区间的表现，不包含涨跌停无法成交、停牌、印花税历史变化和容量冲击，存在幸存者偏差与参数过拟合风险。</small></section>
+              <section className="panel backtest-trades"><div className="section-head"><div><small>逐笔审计</small><h2>交易明细</h2></div><span>最近优先 · 共{backtest.trades.length}笔</span></div><div className="table-wrap"><table><thead><tr><th>入场</th><th>退出</th><th>买入价</th><th>卖出价</th><th>股数</th><th>持有</th><th>收益</th><th>盈亏</th><th>退出原因</th></tr></thead><tbody>{backtest.trades.map((trade,i)=><tr key={`${trade.entryDate}-${i}`}><td>{trade.entryDate}</td><td>{trade.exitDate}</td><td>{trade.entryPrice}</td><td>{trade.exitPrice}</td><td>{trade.shares}</td><td>{trade.holdingDays}日</td><td className={trade.returnPct >= 0 ? "up" : "down"}>{pct(trade.returnPct)}</td><td>{money(trade.pnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div>{!backtest.trades.length && <div className="empty"><b>区间内没有满足条件的交易</b><span>这是有效回测结果，不会为了展示而补造交易。</span></div>}</section>
+            </>}
           </>
         )}
         {tab === "market" && (
