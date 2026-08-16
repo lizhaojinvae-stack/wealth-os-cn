@@ -40,6 +40,7 @@ type MarketAlert = {
 };
 type AlertSettings = {
   enabled: boolean;
+  desktopNotifications: boolean;
   changePct: number;
   instantMovePct: number;
   volumeRatio: number;
@@ -61,6 +62,7 @@ type UserProfile = { displayName: string; avatar: string; avatarColor: string; d
 const DEFAULT_PROFILE: UserProfile = { displayName: "", avatar: "财", avatarColor: "#e85378", defaultTab: "market", refreshSeconds: 5, colorMode: "cn" };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
+  desktopNotifications: false,
   changePct: 3,
   instantMovePct: 0.8,
   volumeRatio: 2,
@@ -68,6 +70,30 @@ const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   mainFlowYi: 1,
   holdingReturnPct: 8,
   cooldownMinutes: 30,
+};
+const ONCE_PER_TRADING_DAY_RULES = new Set(["day-change", "volume-ratio", "turnover", "main-flow", "holding-return"]);
+const getShanghaiMarketClock = (date = new Date()) => {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+  const weekday = !["Sat", "Sun"].includes(parts.weekday);
+  const isTradingSession = weekday && ((minutes >= 570 && minutes < 690) || (minutes >= 780 && minutes < 900));
+  const phase = !weekday ? "休市" : minutes < 570 ? "盘前" : minutes < 690 ? "上午交易" : minutes < 780 ? "午间休市" : minutes < 900 ? "下午交易" : "已收盘";
+  return { tradeDate: `${parts.year}-${parts.month}-${parts.day}`, isTradingSession, phase };
+};
+const compactAlertHistory = (items: MarketAlert[]) => {
+  const seen = new Set<string>();
+  return [...items].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).filter((item) => {
+    const date = new Date(item.createdAt);
+    const day = Number.isNaN(date.getTime()) ? item.createdAt.slice(0, 10) : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(date);
+    const bucket = item.rule === "instant-move" ? `${day}:${date.getHours()}:${Math.floor(date.getMinutes() / 30)}` : day;
+    const key = `${bucket}:${item.code}:${item.rule}:${item.direction}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 200);
 };
 type Bar = {
   date: string;
@@ -590,7 +616,7 @@ export default function Home() {
     const groups = Array.isArray(data.watchGroups) && data.watchGroups.length ? data.watchGroups : [{ id: "default", name: "默认分组", codes: [] }];
     setWatchGroups(groups); setWatch(Array.from(new Set(groups.flatMap((group: { codes?: string[] }) => group.codes || []))));
     setWatchMeta(data.watchMeta || {}); setHoldings(Array.isArray(data.holdings) ? data.holdings : []);
-    setAlerts(Array.isArray(data.alerts) ? data.alerts : []); setAlertSettings({ ...DEFAULT_ALERT_SETTINGS, ...(data.alertSettings || {}) });
+    setAlerts(compactAlertHistory(Array.isArray(data.alerts) ? data.alerts : [])); setAlertSettings({ ...DEFAULT_ALERT_SETTINGS, ...(data.alertSettings || {}) });
     setPlanEvents(Array.isArray(data.planEvents) ? data.planEvents : []); planStatusRef.current = data.planStatuses || {};
     setAiAnalyses(data.aiAnalyses || {});
     const nextProfile = { ...DEFAULT_PROFILE, ...(data.profile || {}) }; setProfile(nextProfile);
@@ -638,7 +664,9 @@ export default function Home() {
       setWatch(Array.from(new Set(groups.flatMap((g: { codes: string[] }) => g.codes))));
       setWatchMeta(JSON.parse(localStorage.getItem("wealth-watch-meta-v1") || "{}"));
       setHoldings(JSON.parse(localStorage.getItem("wealth-holdings") || "[]"));
-      setAlerts(JSON.parse(localStorage.getItem("wealth-alerts-v1") || "[]"));
+      const compactedAlerts = compactAlertHistory(JSON.parse(localStorage.getItem("wealth-alerts-v1") || "[]"));
+      setAlerts(compactedAlerts);
+      localStorage.setItem("wealth-alerts-v1", JSON.stringify(compactedAlerts));
       setAlertSettings({
         ...DEFAULT_ALERT_SETTINGS,
         ...JSON.parse(localStorage.getItem("wealth-alert-settings-v1") || "{}"),
@@ -962,14 +990,19 @@ export default function Home() {
   useEffect(() => {
     if (!alertSettings.enabled || !quotes.length) return;
     const now = Date.now();
+    const marketClock = getShanghaiMarketClock(new Date(now));
+    if (!marketClock.isTradingSession) {
+      quoteHistoryRef.current = {};
+      return;
+    }
     const tracked = new Set([...watch, ...holdings.map((h) => h.code)]);
-    const cooldownKey = "wealth-alert-cooldowns-v1";
+    const cooldownKey = "wealth-alert-cooldowns-v2";
     let cooldowns: Record<string, number> = {};
     try { cooldowns = JSON.parse(localStorage.getItem(cooldownKey) || "{}"); } catch {}
     const candidates: Omit<MarketAlert, "id" | "createdAt" | "read">[] = [];
     const add = (quote: Quote, rule: string, level: AlertLevel, title: string, detail: string, value: number, threshold: number, direction: MarketAlert["direction"]) => {
-      const key = `${quote.code}:${rule}:${direction}`;
-      if (now - (cooldowns[key] || 0) < alertSettings.cooldownMinutes * 60000) return;
+      const key = `${marketClock.tradeDate}:${quote.code}:${rule}:${direction}`;
+      if (ONCE_PER_TRADING_DAY_RULES.has(rule) ? Boolean(cooldowns[key]) : now - (cooldowns[key] || 0) < alertSettings.cooldownMinutes * 60000) return;
       cooldowns[key] = now;
       candidates.push({ code: quote.code, name: quote.name, rule, level, title, detail, value, threshold, direction });
     };
@@ -1006,13 +1039,13 @@ export default function Home() {
     if (!candidates.length) return;
     const created = candidates.map((item, index) => ({ ...item, id: `${now}-${index}-${item.code}-${item.rule}`, createdAt: new Date(now).toISOString(), read: false }));
     setAlerts((current) => {
-      const next = [...created, ...current].slice(0, 200);
+      const next = compactAlertHistory([...created, ...current]);
       localStorage.setItem("wealth-alerts-v1", JSON.stringify(next));
       return next;
     });
     localStorage.setItem(cooldownKey, JSON.stringify(cooldowns));
     const urgent = created.find((item) => item.level === "critical");
-    if (urgent && "Notification" in window && Notification.permission === "granted") {
+    if (urgent && alertSettings.desktopNotifications && "Notification" in window && Notification.permission === "granted") {
       new Notification(`WEALTH OS · ${urgent.name}`, { body: `${urgent.title}：${urgent.detail}` });
     }
   }, [quotes, watch, holdings, alertSettings]);
@@ -1029,13 +1062,19 @@ export default function Home() {
     setAlerts([]);
     localStorage.removeItem("wealth-alerts-v1");
   };
-  const requestNotifications = async () => {
+  const toggleNotifications = async () => {
+    if (alertSettings.desktopNotifications) {
+      saveAlertSettings({ ...alertSettings, desktopNotifications: false });
+      return;
+    }
     if (!("Notification" in window)) return;
-    const permission = await Notification.requestPermission();
+    const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
     setNotificationPermission(permission);
+    if (permission === "granted") saveAlertSettings({ ...alertSettings, desktopNotifications: true });
   };
   const unreadAlerts = alerts.filter((item) => !item.read).length;
   const visibleAlerts = alerts.filter((item) => alertFilter === "all" || item.level === alertFilter);
+  const alertMarketClock = getShanghaiMarketClock();
   useEffect(() => {
     if (!watch.length) return;
     let changed=false;
@@ -1985,8 +2024,8 @@ export default function Home() {
               <div className="alert-hero-actions">
                 <button onClick={markAllAlertsRead}>全部已读</button>
                 <button onClick={clearAlerts}>清空记录</button>
-                <button className="primary" onClick={requestNotifications} disabled={notificationPermission === "granted"}>
-                  {notificationPermission === "granted" ? "桌面通知已开启" : "开启桌面通知"}
+                <button className={alertSettings.desktopNotifications ? "" : "primary"} onClick={toggleNotifications}>
+                  {alertSettings.desktopNotifications ? "关闭桌面通知" : notificationPermission === "denied" ? "桌面通知已被浏览器拒绝" : "开启桌面通知"}
                 </button>
               </div>
             </div>
@@ -1994,7 +2033,7 @@ export default function Home() {
               <article><small>监控标的</small><b>{new Set([...watch, ...holdings.map((h) => h.code)]).size}</b></article>
               <article><small>未读事件</small><b>{unreadAlerts}</b></article>
               <article><small>高优先级</small><b className="up">{alerts.filter((a) => a.level === "critical").length}</b></article>
-              <article><small>引擎状态</small><b className={alertSettings.enabled ? "engine-on" : "down"}>{alertSettings.enabled ? "运行中" : "已暂停"}</b></article>
+              <article><small>引擎状态</small><b className={alertSettings.enabled && alertMarketClock.isTradingSession ? "engine-on" : "down"}>{!alertSettings.enabled ? "已暂停" : alertMarketClock.isTradingSession ? "盘中监控" : `${alertMarketClock.phase}待机`}</b></article>
             </div>
             <section className="panel alert-settings">
               <div className="section-head">
@@ -2010,7 +2049,7 @@ export default function Home() {
             </section>
             <div className="alert-toolbar">
               <div>{(["all", "critical", "warning", "info"] as const).map((level) => <button key={level} className={alertFilter === level ? "active" : ""} onClick={() => setAlertFilter(level)}>{level === "all" ? "全部" : level === "critical" ? "重大" : level === "warning" ? "关注" : "提示"}</button>)}</div>
-              <small>最多保留最近 200 条 · 同类事件按冷却时间去重</small>
+              <small>仅交易时段生成事件 · 静态阈值按交易日去重 · 短时异动按冷却时间去重</small>
             </div>
             <section className="alert-feed">
               {visibleAlerts.map((item) => <article key={item.id} role="button" tabIndex={0} className={`alert-item ${item.level} ${item.read ? "read" : ""}`} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }} onClick={() => {
