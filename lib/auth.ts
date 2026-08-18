@@ -10,6 +10,34 @@ const sha256 = async (value: string) => bytesToBase64(new Uint8Array(await crypt
 
 export const database = () => (env as unknown as { DB: D1Database }).DB;
 
+let authSchemaPromise: Promise<void> | null = null;
+
+export function ensureAuthSchema(): Promise<void> {
+  if (!authSchemaPromise) {
+    authSchemaPromise = (async () => {
+      const db = database();
+      let usersExists = false;
+      try {
+        usersExists = Boolean(await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").first());
+      } catch {
+        usersExists = false;
+      }
+      if (usersExists) return;
+      await db.batch([
+        db.prepare("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, display_name TEXT NOT NULL, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+        db.prepare("CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id)"),
+        db.prepare("CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at)"),
+        db.prepare("CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '{}', revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"),
+      ]);
+    })().catch((error) => {
+      authSchemaPromise = null;
+      throw error;
+    });
+  }
+  return authSchemaPromise;
+}
+
 export async function hashPassword(password: string, salt = randomToken(18)) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: encoder.encode(salt), iterations: 210000 }, key, 256);
@@ -32,11 +60,13 @@ export function readSessionCookie(request: Request) {
 export async function currentUser(request: Request): Promise<AuthUser | null> {
   const token = readSessionCookie(request);
   if (!token) return null;
+  await ensureAuthSchema();
   const row = await database().prepare("SELECT users.id, users.email, users.display_name FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?").bind(await sha256(token), new Date().toISOString()).first<{ id: string; email: string; display_name: string }>();
   return row ? { id: row.id, email: row.email, displayName: row.display_name } : null;
 }
 
 export async function createSession(userId: string) {
+  await ensureAuthSchema();
   const token = randomToken();
   const now = new Date(), expires = new Date(now.getTime() + 30 * 86400000);
   await database().prepare("INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)").bind(await sha256(token), userId, expires.toISOString(), now.toISOString()).run();
@@ -45,7 +75,10 @@ export async function createSession(userId: string) {
 
 export async function removeSession(request: Request) {
   const token = readSessionCookie(request);
-  if (token) await database().prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
+  if (token) {
+    await ensureAuthSchema();
+    await database().prepare("DELETE FROM sessions WHERE token_hash = ?").bind(await sha256(token)).run();
+  }
 }
 
 export const sessionCookie = (token: string, maxAge = 30 * 86400) => `wealth_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;

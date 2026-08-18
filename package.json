@@ -7,8 +7,10 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "predev": "wrangler d1 migrations apply wealth-os-cn --local",
     "build": "vinext build",
     "start": "vinext start",
+    "prestart": "wrangler d1 migrations apply wealth-os-cn --local",
     "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-dev.ps1",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",

@@ -1,4 +1,4 @@
-import { createSession, currentUser, database, hashPassword, publicUser, removeSession, sessionCookie, verifyPassword, type UserRow } from "../../../lib/auth";
+import { createSession, currentUser, database, ensureAuthSchema, hashPassword, publicUser, removeSession, sessionCookie, verifyPassword, type UserRow } from "../../../lib/auth";
 
 const json = (body: unknown, status = 200, headers?: HeadersInit) => Response.json(body, { status, headers });
 
@@ -9,6 +9,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    await ensureAuthSchema();
     const body = await request.json() as { action?: string; email?: string; password?: string; displayName?: string };
     if (body.action === "logout") {
       await removeSession(request);
