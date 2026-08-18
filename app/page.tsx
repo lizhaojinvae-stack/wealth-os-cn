@@ -1167,6 +1167,30 @@ export default function Home() {
       0,
     ),
     holdingCost = holdings.reduce((s, h) => s + h.cost * h.shares, 0);
+  const holdingTotalPnl = holdings.reduce((s, h) => {
+      const p = map[h.code]?.price;
+      return s + (typeof p === "number" && Number.isFinite(p) ? (p - h.cost) * h.shares : 0);
+    }, 0),
+    holdingTotalPnlCost = holdings.reduce((s, h) => {
+      const p = map[h.code]?.price;
+      return s + (typeof p === "number" && Number.isFinite(p) ? h.cost * h.shares : 0);
+    }, 0),
+    holdingTotalRate = holdingTotalPnlCost > 0 ? (holdingTotalPnl / holdingTotalPnlCost) * 100 : NaN;
+  const holdingPrevClose = (code: string) => {
+    const quote = map[code];
+    return quote
+      ? quote.prevClose || (typeof quote.change === "number" && Number.isFinite(quote.change) ? quote.price - quote.change : 0)
+      : 0;
+  };
+  const holdingDayPnl = holdings.reduce((s, h) => {
+      const p = map[h.code]?.price, prev = holdingPrevClose(h.code);
+      return s + (typeof p === "number" && Number.isFinite(p) && prev > 0 ? (p - prev) * h.shares : 0);
+    }, 0),
+    holdingDayStart = holdings.reduce((s, h) => {
+      const p = map[h.code]?.price, prev = holdingPrevClose(h.code);
+      return s + (typeof p === "number" && Number.isFinite(p) && prev > 0 ? prev * h.shares : 0);
+    }, 0),
+    holdingDayRate = holdingDayStart > 0 ? (holdingDayPnl / holdingDayStart) * 100 : NaN;
   const saveWatch = (w: string[]) => {
     setWatch(w);
     localStorage.setItem("wealth-watch", JSON.stringify(w));
@@ -1977,14 +2001,20 @@ export default function Home() {
                 <b>¥ {money(holdingValue)}</b>
               </div>
               <div>
-                <small>持仓成本</small>
-                <b>¥ {money(holdingCost)}</b>
+                <small>总收益</small>
+                <b className={holdingTotalPnl > 0 ? "up" : holdingTotalPnl < 0 ? "down" : "flat"}>
+                  ¥ {money(holdingTotalPnl)} <span className="rate">{pct(holdingTotalRate)}</span>
+                </b>
               </div>
               <div>
-                <small>浮动盈亏</small>
-                <b className={holdingValue - holdingCost >= 0 ? "up" : "down"}>
-                  ¥ {money(holdingValue - holdingCost)}
+                <small>当日收益</small>
+                <b className={holdingDayPnl > 0 ? "up" : holdingDayPnl < 0 ? "down" : "flat"}>
+                  ¥ {money(holdingDayPnl)} <span className="rate">{pct(holdingDayRate)}</span>
                 </b>
+              </div>
+              <div>
+                <small>持仓成本</small>
+                <b>¥ {money(holdingCost)}</b>
               </div>
             </div>
             {holdings.length === 0 ? (
@@ -1996,6 +2026,8 @@ export default function Home() {
                   <span>持有股数</span>
                   <span>每股成本</span>
                   <span>名称 / 当前市值</span>
+                  <span>总收益 / 收益率</span>
+                  <span>当日收益 / 收益率</span>
                   <span>操作</span>
                 </div>
                 {holdings
@@ -2006,6 +2038,12 @@ export default function Home() {
                   .map((h, pageIndex) => {
                   const i = holdingListPage * listPageSize + pageIndex;
                   const x = map[h.code];
+                  const price = x?.price;
+                  const prevClose = holdingPrevClose(h.code);
+                  const totalPnl = typeof price === "number" && Number.isFinite(price) ? (price - h.cost) * h.shares : NaN;
+                  const totalRate = typeof price === "number" && Number.isFinite(price) && h.cost > 0 ? ((price - h.cost) / h.cost) * 100 : NaN;
+                  const dayPnl = typeof price === "number" && Number.isFinite(price) && prevClose > 0 ? (price - prevClose) * h.shares : NaN;
+                  const dayRate = typeof price === "number" && Number.isFinite(price) && prevClose > 0 ? ((price - prevClose) / prevClose) * 100 : NaN;
                   return (
                     <div className="tr holding" key={i}>
                       <input
@@ -2046,6 +2084,14 @@ export default function Home() {
                           现价 {x?.price ?? "-"} · 市值 ¥
                           {money((x?.price || 0) * h.shares)}
                         </small>
+                      </span>
+                      <span className="gain">
+                        <b className={totalPnl > 0 ? "up" : totalPnl < 0 ? "down" : "flat"}>{money(totalPnl)}</b>
+                        <small className={totalRate > 0 ? "up" : totalRate < 0 ? "down" : "flat"}>{pct(totalRate)}</small>
+                      </span>
+                      <span className="gain">
+                        <b className={dayPnl > 0 ? "up" : dayPnl < 0 ? "down" : "flat"}>{money(dayPnl)}</b>
+                        <small className={dayRate > 0 ? "up" : dayRate < 0 ? "down" : "flat"}>{pct(dayRate)}</small>
                       </span>
                       <button
                         onClick={() =>
