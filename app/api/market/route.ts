@@ -1,13 +1,105 @@
 const EM_QUOTE = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 const EM_KLINE = "https://push2his.eastmoney.com/api/qt/stock/kline/get";
+const EM_KLINE_HOSTS = ["push2his.eastmoney.com", "7.push2his.eastmoney.com", "33.push2his.eastmoney.com", "63.push2his.eastmoney.com", "91.push2his.eastmoney.com"];
+const EM_UT = "7eea3edcaed734bea9cbfc24409ed989";
 
+const SECID_RE = /^\d{3}\.[A-Za-z0-9.-]+$/i;
+function klineBegin(klt:string, targetBars=180){
+  const days=klt==="103"?targetBars*32:klt==="102"?targetBars*8:klt==="101"?Math.ceil(targetBars*1.7):Math.max(7,Math.ceil(targetBars/(240/Number(klt||5))*1.7)+5);
+  const date=new Date(Date.now()-days*86400000);
+  return `${date.getUTCFullYear()}${String(date.getUTCMonth()+1).padStart(2,"0")}${String(date.getUTCDate()).padStart(2,"0")}`;
+}
 function secid(code: string) {
   if (/^[01]\.\d{6}$/.test(code)) return code;
+  // 直接透传全球标的 secid：105.AAPL / 106.BRK.B / 122.XAU / 113.aum / 101.GC00Y / 100.DJIA / 116.00700
+  if (SECID_RE.test(code)) return code;
   const c = code.replace(/\D/g, "").slice(-6);
   return `${/^(5|6)/.test(c) ? "1" : "0"}.${c}`;
 }
+// 境外/全球标的：非 沪深京 的 secid（美股/港美股指数/贵金属现货/内外盘期货）
+const isGlobal = (code: string) => SECID_RE.test(code) && !/^[01]\.\d{6}$/.test(code);
 function txSymbol(code:string){if(/^[01]\.\d{6}$/.test(code))return `${code.startsWith("1.")?"sh":"sz"}${code.slice(2)}`;const c=code.replace(/\D/g,"").slice(-6);return `${/^[489]/.test(c)?"bj":/^(5|6)/.test(c)?"sh":"sz"}${c}`}
-async function fetchText(url:string,headers:Record<string,string>,tries=2){let last:unknown;for(let i=0;i<tries;i++){try{const r=await fetch(url,{headers,signal:AbortSignal.timeout(9000)});if(!r.ok)throw new Error(`上游 ${r.status}`);return await r.text()}catch(e){last=e}}throw last}
+async function fetchText(url:string,headers:Record<string,string>,tries=2,timeout=9000){let last:unknown;for(let i=0;i<tries;i++){try{const r=await fetch(url,{headers,signal:AbortSignal.timeout(timeout)});if(!r.ok)throw new Error(`上游 ${r.status}`);return await r.text()}catch(e){last=e}}throw last}
+async function fetchKlineJson(query: URLSearchParams, headers: Record<string,string>) {
+  let last: unknown;
+  query.set("ut", EM_UT);
+  const klineHeaders={...headers,Accept:"application/json, text/plain, */*"};
+  for (const host of EM_KLINE_HOSTS.slice(0,3)) {
+    try {
+      const text = await fetchText(`https://${host}/api/qt/stock/kline/get?${query}`, klineHeaders, 1, 3500);
+      const json = JSON.parse(text) as { rc?: number; data?: { name?: string; code?: string; klines?: string[] } | null };
+      if (json.data?.klines?.length) return { json, host };
+      last = new Error(`${host} 返回空K线（可能限流）`);
+    } catch (failure) { last = failure; }
+  }
+  throw last || new Error("东方财富K线节点均不可用");
+}
+function yahooSymbol(code:string){
+  const [market,symbol]=code.split(".",2);
+  if(["105","106","107"].includes(market))return symbol.replace(".","-");
+  if(market==="100")return ({DJIA:"^DJI",NDX:"^NDX",SPX:"^GSPC"} as Record<string,string>)[symbol]||`^${symbol}`;
+  if(market==="122")return symbol==="XAG"?"SI=F":"GC=F";
+  if(market==="101")return /^SI/i.test(symbol)?"SI=F":"GC=F";
+  return "";
+}
+async function fetchYahooKline(code:string,klt:string,headers:Record<string,string>){
+  const symbol=yahooSymbol(code);if(!symbol)throw new Error("该全球品种暂无备用K线映射");
+  const intervals:Record<string,string>={"5":"5m","15":"15m","30":"30m","60":"60m","101":"1d","102":"1wk","103":"1mo"};
+  const ranges:Record<string,string>={"5":"5d","15":"1mo","30":"1mo","60":"3mo","101":"1y","102":"5y","103":"10y"};
+  const endpoint=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${ranges[klt]||"1y"}&interval=${intervals[klt]||"1d"}&events=div%2Csplits`;
+  const json=JSON.parse(await fetchText(endpoint,{...headers,Referer:"https://finance.yahoo.com/"},2,7000)) as {chart?:{error?:{description?:string}|null;result?:Array<{timestamp?:number[];indicators?:{quote?:Array<{open?:(number|null)[];close?:(number|null)[];high?:(number|null)[];low?:(number|null)[];volume?:(number|null)[]}>}}>} };
+  if(json.chart?.error)throw new Error(json.chart.error.description||"Yahoo Finance K线失败");
+  const result=json.chart?.result?.[0],quote=result?.indicators?.quote?.[0],timestamps=result?.timestamp||[];
+  const bars=timestamps.map((stamp,index)=>({date:new Date(stamp*1000).toISOString().replace("T"," ").slice(0,klt==="101"||klt==="102"||klt==="103"?10:16),open:Number(quote?.open?.[index]),close:Number(quote?.close?.[index]),high:Number(quote?.high?.[index]),low:Number(quote?.low?.[index]),volume:Number(quote?.volume?.[index])||0,amount:0,amplitude:0,changePct:0,change:0,turnover:0})).filter(bar=>[bar.open,bar.close,bar.high,bar.low].every(Number.isFinite)).slice(-180);
+  if(!bars.length)throw new Error("Yahoo Finance 返回空K线");
+  return {bars,symbol};
+}
+type GlobalBar={date:string;open:number;close:number;high:number;low:number;volume:number;amount:number;amplitude:number;changePct:number;change:number;turnover:number};
+function aggregateBars(rows:GlobalBar[],period:"week"|"month"){
+  const groups=new Map<string,GlobalBar[]>();
+  for(const row of rows){const date=new Date(`${row.date.slice(0,10)}T00:00:00Z`),key=period==="month"?row.date.slice(0,7):new Date(date.getTime()-((date.getUTCDay()+6)%7)*86400000).toISOString().slice(0,10);groups.set(key,[...(groups.get(key)||[]),row])}
+  return [...groups.values()].map(group=>{const first=group[0],last=group.at(-1)!;return {...last,date:last.date.slice(0,10),open:first.open,high:Math.max(...group.map(x=>x.high)),low:Math.min(...group.map(x=>x.low)),close:last.close,volume:group.reduce((sum,x)=>sum+x.volume,0)}});
+}
+async function fetchSinaGlobalKline(code:string,klt:string,headers:Record<string,string>){
+  const [market,symbol]=code.split(".",2);let rows:GlobalBar[]=[];let source="";
+  if(["105","106","107"].includes(market)){
+    const endpoint=`https://stock.finance.sina.com.cn/usstock/api/json_v2.php/US_MinKService.getDailyK?symbol=${encodeURIComponent(symbol)}`;
+    const raw=JSON.parse(await fetchText(endpoint,headers,2,12000)) as Array<{d:string;o:string;c:string;h:string;l:string;v:string;a?:string}>;
+    rows=raw.map(x=>({date:x.d,open:+x.o,close:+x.c,high:+x.h,low:+x.l,volume:+x.v||0,amount:+(x.a||0)||0,amplitude:0,changePct:0,change:0,turnover:0}));source="新浪财经美股历史行情";
+  }else if(market==="122"||market==="101"){
+    const spot=market==="122",metal=spot?(symbol==="XAG"?"XAG":"XAU"):(/^SI/i.test(symbol)?"SI":"GC"),endpoint=`https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20k=/GlobalFuturesService.getGlobalFuturesDailyKLine?symbol=${metal}`;
+    const text=await fetchText(endpoint,headers,2,12000),start=text.indexOf("(["),end=text.lastIndexOf(");");if(start<0||end<0)throw new Error("新浪贵金属K线格式异常");
+    const raw=JSON.parse(text.slice(start+1,end)) as Array<{date:string;open:string;close:string;high:string;low:string;volume:string}>;
+    rows=raw.map(x=>({date:x.date,open:+x.open,close:+x.close,high:+x.high,low:+x.low,volume:+x.volume||0,amount:0,amplitude:0,changePct:0,change:0,turnover:0}));source=`新浪财经${metal==="SI"||metal==="XAG"?"白银":"黄金"}${spot?"现货":"连续"}行情`;
+  }
+  rows=rows.filter(x=>[x.open,x.close,x.high,x.low].every(Number.isFinite));
+  if(klt==="102")rows=aggregateBars(rows,"week");else if(klt==="103")rows=aggregateBars(rows,"month");else if(klt!=="101")throw new Error("备用源暂不支持该分钟周期");
+  if(!rows.length)throw new Error("新浪财经返回空K线");return {bars:rows.slice(-180),source};
+}
+async function fetchSinaGlobalMinute(code:string,klt:string,headers:Record<string,string>){
+  const [market,symbol]=code.split(".",2),minutes=Number(klt);if(![5,15,30,60].includes(minutes))throw new Error("分钟周期不支持");
+  if(["105","106","107"].includes(market)){
+    const endpoint=`https://stock.finance.sina.com.cn/usstock/api/json_v2.php/US_MinKService.getMinK?symbol=${encodeURIComponent(symbol)}&type=${minutes}`;
+    const raw=JSON.parse(await fetchText(endpoint,headers,2,12000)) as Array<{d:string;o:string;c:string;h:string;l:string;v:string;a?:string}>;
+    const bars=raw.map(x=>({date:x.d.slice(0,16),open:+x.o,close:+x.c,high:+x.h,low:+x.l,volume:+x.v||0,amount:+(x.a||0)||0,amplitude:0,changePct:0,change:0,turnover:0})).filter(x=>[x.open,x.close,x.high,x.low].every(Number.isFinite)).slice(-180);
+    if(!bars.length)throw new Error("新浪美股分钟K线为空");return {bars,source:"新浪财经美股分钟行情"};
+  }
+  if(market==="122"){
+    const metal=symbol==="XAG"?"XAG":"XAU",endpoint=`https://stock2.finance.sina.com.cn/futures/api/json.php/GlobalFuturesService.getGlobalFuturesMinLine?symbol=${metal}`;
+    const json=JSON.parse(await fetchText(endpoint,headers,2,12000)) as {minLine_1d?:Array<Array<string>>};
+    const points=(json.minLine_1d||[]).map(row=>({date:String(row.at(-1)||"").slice(0,16),price:+row[1]})).filter(x=>x.date.length===16&&Number.isFinite(x.price));
+    const groups=new Map<string,typeof points>();for(const point of points){const minute=Number(point.date.slice(14,16)),key=`${point.date.slice(0,14)}${String(Math.floor(minute/minutes)*minutes).padStart(2,"0")}`;groups.set(key,[...(groups.get(key)||[]),point])}
+    const bars=[...groups.entries()].map(([date,group])=>({date,open:group[0].price,close:group.at(-1)!.price,high:Math.max(...group.map(x=>x.price)),low:Math.min(...group.map(x=>x.price)),volume:0,amount:0,amplitude:0,changePct:0,change:0,turnover:0})).slice(-180);
+    if(!bars.length)throw new Error("新浪贵金属分钟行情为空");return {bars,source:`新浪财经${metal==="XAG"?"白银":"黄金"}现货分钟行情`};
+  }
+  throw new Error("该全球标的暂无分钟备用源");
+}
+async function fetchTencentMinute(code:string,klt:string,headers:Record<string,string>){
+  const sym=txSymbol(code),period=`m${klt}`,endpoint=`https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${sym},${period},,180`;
+  const json=JSON.parse(await fetchText(endpoint,headers,2,8000)) as {data?:Record<string,Record<string,string[][]>>},rows=(json.data?.[sym]?.[period]||[]).slice(-180);
+  const bars=rows.map(v=>({date:v[0],open:+v[1],close:+v[2],high:+v[3],low:+v[4],volume:+v[5],amount:0,amplitude:0,changePct:0,change:0,turnover:0})).filter(x=>[x.open,x.close,x.high,x.low].every(Number.isFinite));
+  if(!bars.length)throw new Error("腾讯证券分钟K线为空");return {bars,source:"腾讯证券分钟K线"};
+}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -222,16 +314,41 @@ export async function GET(request: Request) {
         const rows=Array.from(new Map(payloads.flat().map(v=>[`${v.QuoteID}:${v.Code}`,v])).values());
         const stockPrefix=/^(000|001|002|003|300|301|600|601|603|605|688|689)/;
         const etfPrefix=/^(159|510|511|512|513|515|516|517|518|520|560|561|562|563|588|589)/;
+        // 全球市场代码前缀 → 展示标签
+        const GLOBAL_META: Record<string,{exchange:string;type:string}> = {
+          "105":{exchange:"US",type:"美股"}, "106":{exchange:"US",type:"美股"}, "107":{exchange:"US",type:"美股"},
+          "100":{exchange:"US-IDX",type:"美股指数"}, "122":{exchange:"SPOT",type:"贵金属现货"},
+          "113":{exchange:"CN-FUT",type:"内盘期货"}, "101":{exchange:"FUT",type:"外盘期货"}, "116":{exchange:"HK",type:"港股"},
+        };
+        const US_INDEX_WHITELIST = new Set(["DJIA","NDX","SPX","IXIC"]);
+        const shortCode = (value: string) => value.includes(".") ? value.split(".").slice(1).join(".") : value;
         const results=rows
-          .filter(v=>/^\d{6}$/.test(v.Code)&&(
-            (stockPrefix.test(v.Code)&&(v.Classify==="AStock"||v.Classify==="23"||v.SecurityTypeName?.includes("A")||v.SecurityTypeName?.includes("科创")))||
-            (v.SecurityTypeName?.includes("京A"))||
-            (v.Classify==="Fund"&&etfPrefix.test(v.Code))
-          ))
-          .map(v=>({exchange:v.SecurityTypeName?.includes("京A")?"BJ":v.QuoteID?.startsWith("1.")?"SH":"SZ",code:v.Code,name:v.Name,pinyin:(v.PinYin||"").toLowerCase(),type:v.Classify==="Fund"?"ETF":v.SecurityTypeName||"A股"}))
-          .filter(v=>isChinese?compact(v.name).includes(normalizedNeedle)||normalizedNeedle.includes(compact(v.name)):v.code.includes(needle)||v.pinyin.includes(needle))
-          .sort((a,b)=>Number(b.code.startsWith(needle))-Number(a.code.startsWith(needle))||Number(compact(b.name).startsWith(normalizedNeedle))-Number(compact(a.name).startsWith(normalizedNeedle))||a.name.localeCompare(b.name,"zh-CN"));
-        return Response.json({ok:true,source:"东方财富证券搜索 · 沪深/科创板/创业板/北交所",fetchedAt:new Date().toISOString(),query:q,total:results.length,results});
+          .filter(v=>{
+            const qid=String(v.QuoteID||""), gm=qid.match(/^(\d{3})\.([A-Za-z0-9]+)$/);
+            if (gm) {
+              const pre=gm[1], cd=gm[2].toUpperCase();
+              if (["105","106","107"].includes(pre)) return true;
+              if (pre==="100") return US_INDEX_WHITELIST.has(cd);
+              if (["122","113","101","116"].includes(pre)) return true;
+              return false;
+            }
+            return /^\d{6}$/.test(v.Code)&&(
+              (stockPrefix.test(v.Code)&&(v.Classify==="AStock"||v.Classify==="23"||v.SecurityTypeName?.includes("A")||v.SecurityTypeName?.includes("科创")))||
+              (v.SecurityTypeName?.includes("京A"))||
+              (v.Classify==="Fund"&&etfPrefix.test(v.Code))
+            );
+          })
+          .map(v=>{
+            const qid=String(v.QuoteID||""), gm=qid.match(/^(\d{3})\.([A-Za-z0-9]+)$/);
+            if (gm) {
+              const meta=GLOBAL_META[gm[1]]||{exchange:"GLOBAL",type:"全球市场"};
+              return {exchange:meta.exchange,code:qid,name:v.Name||gm[2],pinyin:(v.PinYin||"").toLowerCase(),type:meta.type};
+            }
+            return {exchange:v.SecurityTypeName?.includes("京A")?"BJ":v.QuoteID?.startsWith("1.")?"SH":"SZ",code:v.Code,name:v.Name,pinyin:(v.PinYin||"").toLowerCase(),type:v.Classify==="Fund"?"ETF":v.SecurityTypeName||"A股"};
+          })
+          .filter(v=>isChinese?compact(v.name).includes(normalizedNeedle)||normalizedNeedle.includes(compact(v.name)):(shortCode(v.code).toLowerCase().includes(needle)||v.code.includes(needle)||v.pinyin.includes(needle)||v.name.toLowerCase().includes(needle)))
+          .sort((a,b)=>Number(shortCode(b.code).toLowerCase().startsWith(needle))-Number(shortCode(a.code).toLowerCase().startsWith(needle))||Number(compact(b.name).startsWith(normalizedNeedle))-Number(compact(a.name).startsWith(normalizedNeedle))||a.name.localeCompare(b.name,"zh-CN"));
+        return Response.json({ok:true,source:"东方财富证券搜索 · A股/ETF/美股/港股/贵金属/期货",fetchedAt:new Date().toISOString(),query:q,total:results.length,results});
       }catch{}
       const body = await fetchText(`https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(q)}&t=all`,headers);
       const encoded = body.match(/v_hint="([\s\S]*)"/)?.[1] || "",decoded = JSON.parse(`"${encoded.replace(/"/g, '\\"')}"`) as string;
@@ -257,12 +374,16 @@ export async function GET(request: Request) {
         await Promise.all(codes.slice(i,i+6).map(async code=>{
           try{
             let rows:{date:string;close:number}[]=[];
+            const global = isGlobal(code);
             try{
-              const upstream=`${EM_KLINE}?secid=${secid(code)}&klt=101&fqt=1&beg=0&end=20500101&lmt=320&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56`;
-              const body=await fetchText(upstream,headers);
-              rows=((JSON.parse(body) as {data?:{klines?:string[]}}).data?.klines||[]).map(x=>{const v=x.split(",");return {date:v[0],close:+v[2]}}).filter(x=>Number.isFinite(x.close));
+              const query=new URLSearchParams({secid:secid(code),klt:"101",fqt:global?"0":"1",beg:klineBegin("101",320),end:"20500101",lmt:"320",fields1:"f1,f2,f3,f4,f5,f6",fields2:"f51,f52,f53,f54,f55,f56"});
+              const {json}=await fetchKlineJson(query,headers);
+              rows=(json.data?.klines||[]).map(x=>{const v=x.split(",");return {date:v[0],close:+v[2]}}).filter(x=>Number.isFinite(x.close));
             }catch{}
-            if(!rows.length){
+            if(!rows.length&&global){
+              try{const fallback=await fetchSinaGlobalKline(code,"101",headers);rows=fallback.bars.map(bar=>({date:bar.date.slice(0,10),close:bar.close}))}catch{try{const fallback=await fetchYahooKline(code,"101",headers);rows=fallback.bars.map(bar=>({date:bar.date.slice(0,10),close:bar.close}))}catch{}}
+            }
+            if(!rows.length && !global){
               const sym=txSymbol(code),txUrl=`http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},day,,,320,qfq`;
               const tx=JSON.parse(await fetchText(txUrl,headers)) as {data?:Record<string,Record<string,string[][]>>};
               const node=tx.data?.[sym]||{};
@@ -274,14 +395,23 @@ export async function GET(request: Request) {
           }catch{}
         }));
       }
-      return Response.json({ok:true,source:"东方财富前复权日线计算",fetchedAt:new Date().toISOString(),results});
+      return Response.json({ok:true,source:"东方财富日线计算（A股前复权/全球不复权）",fetchedAt:new Date().toISOString(),results});
     }
     if (type === "kline") {
       const code = url.searchParams.get("code") || "000001";
       const klt = ["5","15","30","60","101","102","103"].includes(url.searchParams.get("klt")||"") ? url.searchParams.get("klt") : "101";
-      const upstream = `${EM_KLINE}?secid=${secid(code)}&klt=${klt}&fqt=1&beg=0&end=20500101&lmt=180&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
-      try{const body=await fetchText(upstream,headers);const json=JSON.parse(body) as { data?: { name?: string; code?: string; klines?: string[] } };const bars=(json.data?.klines||[]).slice(-180).map(x=>{const v=x.split(",");return {date:v[0],open:+v[1],close:+v[2],high:+v[3],low:+v[4],volume:+v[5],amount:+v[6],amplitude:+v[7],changePct:+v[8],change:+v[9],turnover:+v[10]}});if(bars.length)return Response.json({ok:true,source:"东方财富 push2his",fetchedAt:new Date().toISOString(),code:json.data?.code,name:json.data?.name,adjustment:"前复权",bars})}catch{}
-      const sym=txSymbol(code),period=klt==="102"?"week":klt==="103"?"month":klt==="101"?"day":`m${klt}`;const txUrl=klt==="101"||klt==="102"||klt==="103"?`http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},${period},,,180,qfq`:`http://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${sym},${period},,180`;const tx=JSON.parse(await fetchText(txUrl,headers)) as {data?:Record<string,Record<string,string[][]>>};const node=tx.data?.[sym]||{},rows=(node[`qfq${period}`]||node[period]||[]).slice(-180);const bars=rows.map(v=>({date:v[0],open:+v[1],close:+v[2],high:+v[3],low:+v[4],volume:+v[5],amount:0,amplitude:0,changePct:0,change:0,turnover:0}));return Response.json({ok:true,source:"腾讯证券K线（备用）",fetchedAt:new Date().toISOString(),code:sym.slice(2),adjustment:"前复权",bars});
+      const global = isGlobal(code);
+      const minutePeriod=["5","15","30","60"].includes(klt||"");
+      if(minutePeriod&&global){try{const result=await fetchSinaGlobalMinute(code,klt||"5",headers);return Response.json({ok:true,source:result.source,fetchedAt:new Date().toISOString(),code:code.split(".").slice(1).join("."),adjustment:"不复权",bars:result.bars})}catch{}}
+      if(minutePeriod&&!global){try{const result=await fetchTencentMinute(code,klt||"5",headers);return Response.json({ok:true,source:result.source,fetchedAt:new Date().toISOString(),code:secid(code).slice(2),adjustment:"不复权",bars:result.bars})}catch{}}
+      const query=new URLSearchParams({secid:secid(code),klt:klt||"101",fqt:global?"0":"1",beg:klineBegin(klt||"101"),end:"20500101",lmt:"180",fields1:"f1,f2,f3,f4,f5,f6",fields2:"f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"});
+      let eastmoneyFailure:unknown;
+      try{const {json,host}=await fetchKlineJson(query,headers);const bars=(json.data?.klines||[]).slice(-180).map(x=>{const v=x.split(",");return {date:v[0],open:+v[1],close:+v[2],high:+v[3],low:+v[4],volume:+v[5],amount:+v[6],amplitude:+v[7],changePct:+v[8],change:+v[9],turnover:+v[10]}});if(bars.length)return Response.json({ok:true,source:`东方财富 ${host} push2his`,fetchedAt:new Date().toISOString(),code:json.data?.code,name:json.data?.name,adjustment:global?"不复权":"前复权",bars})}catch(failure){eastmoneyFailure=failure}
+      if (global) {
+        try{const fallback=await fetchSinaGlobalKline(code,klt||"101",headers);return Response.json({ok:true,source:`${fallback.source}（东方财富历史节点暂不可用）`,fetchedAt:new Date().toISOString(),code:code.split(".").slice(1).join("."),adjustment:"不复权",bars:fallback.bars})}
+        catch(sinaFailure){try{const fallback=await fetchYahooKline(code,klt||"101",headers);return Response.json({ok:true,source:`Yahoo Finance 全球行情（${fallback.symbol}，东方财富及新浪节点暂不可用）`,fetchedAt:new Date().toISOString(),code:code.split(".").slice(1).join("."),adjustment:"不复权",bars:fallback.bars})}catch(fallbackFailure){return Response.json({ok:false,error:`东方财富：${eastmoneyFailure instanceof Error?eastmoneyFailure.message:"获取失败"}；新浪：${sinaFailure instanceof Error?sinaFailure.message:"获取失败"}；Yahoo：${fallbackFailure instanceof Error?fallbackFailure.message:"获取失败"}`},{status:502})}}
+      }
+      const sym=txSymbol(code),period=klt==="102"?"week":klt==="103"?"month":klt==="101"?"day":`m${klt}`;const txUrl=klt==="101"||klt==="102"||klt==="103"?`https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},${period},,,180,qfq`:`https://ifzq.gtimg.cn/appstock/app/kline/mkline?param=${sym},${period},,180`;const tx=JSON.parse(await fetchText(txUrl,headers)) as {data?:Record<string,Record<string,string[][]>>};const node=tx.data?.[sym]||{},rows=(node[`qfq${period}`]||node[period]||[]).slice(-180);const bars=rows.map(v=>({date:v[0],open:+v[1],close:+v[2],high:+v[3],low:+v[4],volume:+v[5],amount:0,amplitude:0,changePct:0,change:0,turnover:0}));return Response.json({ok:true,source:"腾讯证券K线（备用）",fetchedAt:new Date().toISOString(),code:sym.slice(2),adjustment:"前复权",bars});
     }
     if (type === "detail") {
       const code = url.searchParams.get("code") || "600519";
