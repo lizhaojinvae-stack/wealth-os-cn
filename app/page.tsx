@@ -274,6 +274,14 @@ type UserProfile = {
   defaultTab: string;
   refreshSeconds: number;
   colorMode: "cn" | "global";
+  aiProvider: string;
+  aiModel: string;
+};
+type AiProviderDefinition = {
+  id: string;
+  name: string;
+  note: string;
+  models: { id: string; name: string; note?: string }[];
 };
 const DEFAULT_PROFILE: UserProfile = {
   displayName: "",
@@ -282,6 +290,8 @@ const DEFAULT_PROFILE: UserProfile = {
   defaultTab: "market",
   refreshSeconds: 5,
   colorMode: "cn",
+  aiProvider: "deepseek",
+  aiModel: "deepseek-v4-pro",
 };
 const DEFAULT_ALERT_SETTINGS: AlertSettings = {
   enabled: true,
@@ -1256,17 +1266,18 @@ function PriceChart({
           {cursorPrice.toFixed(2)}
         </div>
       )}
-      {Number.isFinite(openLinePrice) && (() => {
-        const oy = y(openLinePrice);
-        return oy >= 0 && oy <= 88 ? (
-          <div
-            className="ref-tag open-tag"
-            style={{ top: `${(oy / 88) * 100}%` }}
-          >
-            开 {openLinePrice.toFixed(2)}
-          </div>
-        ) : null;
-      })()}
+      {Number.isFinite(openLinePrice) &&
+        (() => {
+          const oy = y(openLinePrice);
+          return oy >= 0 && oy <= 88 ? (
+            <div
+              className="ref-tag open-tag"
+              style={{ top: `${(oy / 88) * 100}%` }}
+            >
+              开 {openLinePrice.toFixed(2)}
+            </div>
+          ) : null;
+        })()}
       {Number.isFinite(limitUpPrice) && Number.isFinite(limitDownPrice) && (
         <>
           {(() => {
@@ -1434,6 +1445,21 @@ export default function Home() {
     [aiLoading, setAiLoading] = useState(false),
     [aiError, setAiError] = useState(""),
     [aiMeta, setAiMeta] = useState({ model: "", generatedAt: "" }),
+    [aiProviders, setAiProviders] = useState<AiProviderDefinition[]>([]),
+    [aiConfigured, setAiConfigured] = useState<
+      Record<
+        string,
+        {
+          configured: boolean;
+          keyHint: string;
+          updatedAt?: string | null;
+          source?: string;
+        }
+      >
+    >({}),
+    [aiKeyDrafts, setAiKeyDrafts] = useState<Record<string, string>>({}),
+    [aiConfigBusy, setAiConfigBusy] = useState(""),
+    [aiConfigMessage, setAiConfigMessage] = useState(""),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
     [stamp, setStamp] = useState(""),
@@ -1691,6 +1717,70 @@ export default function Home() {
     }
     setUserDataReady(true);
   };
+  const loadAiProviderConfig = async () => {
+    const response = await fetch("/api/model-config", { cache: "no-store" });
+    const json = await response.json();
+    if (!json.ok) throw new Error(json.error || "读取模型配置失败");
+    setAiProviders(json.providers || []);
+    setAiConfigured(json.configured || {});
+    setProfile((item) => {
+      if (json.configured?.[item.aiProvider]?.configured) return item;
+      const first = (json.providers || []).find(
+        (provider: AiProviderDefinition) =>
+          json.configured?.[provider.id]?.configured,
+      );
+      return first
+        ? { ...item, aiProvider: first.id, aiModel: first.models[0]?.id || "" }
+        : item;
+    });
+  };
+  const saveAiProviderKey = async (provider: string) => {
+    const apiKey = (aiKeyDrafts[provider] || "").trim();
+    if (!apiKey) {
+      setAiConfigMessage("请输入 API Key");
+      return;
+    }
+    setAiConfigBusy(provider);
+    setAiConfigMessage("");
+    try {
+      const response = await fetch("/api/model-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, apiKey }),
+      });
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || "保存失败");
+      setAiKeyDrafts((items) => ({ ...items, [provider]: "" }));
+      await loadAiProviderConfig();
+      setAiConfigMessage("API Key 已加密保存");
+    } catch (failure) {
+      setAiConfigMessage(
+        failure instanceof Error ? failure.message : "保存失败",
+      );
+    } finally {
+      setAiConfigBusy("");
+    }
+  };
+  const removeAiProviderKey = async (provider: string) => {
+    setAiConfigBusy(provider);
+    setAiConfigMessage("");
+    try {
+      const response = await fetch(
+        `/api/model-config?provider=${encodeURIComponent(provider)}`,
+        { method: "DELETE" },
+      );
+      const json = await response.json();
+      if (!json.ok) throw new Error(json.error || "删除失败");
+      await loadAiProviderConfig();
+      setAiConfigMessage("该供应商的 API Key 已删除");
+    } catch (failure) {
+      setAiConfigMessage(
+        failure instanceof Error ? failure.message : "删除失败",
+      );
+    } finally {
+      setAiConfigBusy("");
+    }
+  };
   const submitAuth = async () => {
     setAuthLoading(true);
     setAuthError("");
@@ -1779,6 +1869,14 @@ export default function Home() {
       }
     } catch {}
   }, []);
+  useEffect(() => {
+    if (!authUser) return;
+    loadAiProviderConfig().catch((failure) =>
+      setAiConfigMessage(
+        failure instanceof Error ? failure.message : "读取模型配置失败",
+      ),
+    );
+  }, [authUser]);
   useEffect(() => {
     fetch("/api/auth", { cache: "no-store" })
       .then((response) => response.json())
@@ -3161,6 +3259,8 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          provider: profile.aiProvider,
+          model: profile.aiModel,
           code: selected,
           name: q.name,
           quote: {
@@ -3185,14 +3285,12 @@ export default function Home() {
             averageVolume: Number.isFinite(avgVolume) ? avgVolume : null,
             ruleSignal: signal,
           },
-          news: stockNews
-            .slice(0, 8)
-            .map((n) => ({
-              title: n.title,
-              summary: n.summary,
-              publishedAt: n.publishedAt,
-              source: n.source,
-            })),
+          news: stockNews.slice(0, 8).map((n) => ({
+            title: n.title,
+            summary: n.summary,
+            publishedAt: n.publishedAt,
+            source: n.source,
+          })),
         }),
       });
       const json = await response.json();
@@ -3511,6 +3609,81 @@ export default function Home() {
                 </select>
               </label>
             </div>
+            <section className="profile-models">
+              <div className="profile-models-head">
+                <div>
+                  <b>AI 模型与 API Key</b>
+                  <p>
+                    Key 按供应商维护，与具体模型版本分离；保存后只显示掩码。
+                  </p>
+                </div>
+                <span>
+                  {
+                    Object.values(aiConfigured).filter(
+                      (item) => item.configured,
+                    ).length
+                  }{" "}
+                  家已配置
+                </span>
+              </div>
+              <div className="profile-model-list">
+                {aiProviders.map((provider) => {
+                  const configured = aiConfigured[provider.id];
+                  return (
+                    <article key={provider.id}>
+                      <header>
+                        <div>
+                          <b>{provider.name}</b>
+                          <small>{provider.note}</small>
+                        </div>
+                        <span className={configured ? "configured" : ""}>
+                          {configured ? "已配置" : "未配置"}
+                        </span>
+                      </header>
+                      <p>
+                        {provider.models.map((model) => model.name).join(" · ")}
+                      </p>
+                      <div className="profile-key-row">
+                        <input
+                          type="password"
+                          autoComplete="new-password"
+                          placeholder={configured?.keyHint || "输入 API Key"}
+                          value={aiKeyDrafts[provider.id] || ""}
+                          onChange={(event) =>
+                            setAiKeyDrafts((items) => ({
+                              ...items,
+                              [provider.id]: event.target.value,
+                            }))
+                          }
+                        />
+                        <button
+                          disabled={aiConfigBusy === provider.id}
+                          onClick={() => saveAiProviderKey(provider.id)}
+                        >
+                          {configured ? "更新" : "保存"}
+                        </button>
+                        {configured && configured.source !== "environment" && (
+                          <button
+                            className="danger"
+                            disabled={aiConfigBusy === provider.id}
+                            onClick={() => removeAiProviderKey(provider.id)}
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+              {aiConfigMessage && (
+                <p className="profile-model-message">{aiConfigMessage}</p>
+              )}
+              <small className="profile-model-note">
+                自定义模型 ID 可在策略 AI
+                分析处直接填写；服务端会使用这里配置的对应供应商 Key。
+              </small>
+            </section>
             <div className="profile-security">
               <b>账户与数据</b>
               <p>
@@ -3714,7 +3887,9 @@ export default function Home() {
                     <b>{row.name}</b>
                     <small>{row.code}</small>
                   </span>
-                  <span className={marketTone(row.changePct)}>{row.price.toFixed(2)}</span>
+                  <span className={marketTone(row.changePct)}>
+                    {row.price.toFixed(2)}
+                  </span>
                   <span className={marketTone(row.changePct)}>
                     {pct(row.changePct)}
                   </span>
@@ -3931,9 +4106,7 @@ export default function Home() {
                         </div>
                         <div>
                           <small>主力净流</small>
-                          <b
-                            className={marketTone(board.mainNetInflow)}
-                          >
+                          <b className={marketTone(board.mainNetInflow)}>
                             {money(board.mainNetInflow)}
                           </b>
                         </div>
@@ -3991,7 +4164,9 @@ export default function Home() {
                                 {stock.code} · {stock.industry}
                               </em>
                             </span>
-                            <strong className={marketTone(stock.changePct)}>{pct(stock.changePct)}</strong>
+                            <strong className={marketTone(stock.changePct)}>
+                              {pct(stock.changePct)}
+                            </strong>
                             <small>
                               首封 {stock.firstSealTime} · 炸板{" "}
                               {stock.openCount}次 · 换手{" "}
@@ -4361,9 +4536,7 @@ export default function Home() {
               </article>
               <article>
                 <small>总盈亏</small>
-                <b className={marketTone(simProfit)}>
-                  {money(simProfit)}
-                </b>
+                <b className={marketTone(simProfit)}>{money(simProfit)}</b>
                 <span>{pct((simProfit / 1000000) * 100)}</span>
               </article>
             </section>
@@ -4593,7 +4766,9 @@ export default function Home() {
                               {position.shares} / {position.available}
                             </td>
                             <td>{position.cost.toFixed(3)}</td>
-                            <td className={marketTone(latestQuote?.changePct)}>{latest.toFixed(2)}</td>
+                            <td className={marketTone(latestQuote?.changePct)}>
+                              {latest.toFixed(2)}
+                            </td>
                             <td>{money(latest * position.shares)}</td>
                             <td className={marketTone(pnl)}>
                               {money(pnl)}
@@ -5111,7 +5286,9 @@ export default function Home() {
                             </div>
                           ))}
                       </div>
-                      <div className={`book-mid ${marketTone(q?.changePct)}`}>最新 {q?.price ?? "-"}</div>
+                      <div className={`book-mid ${marketTone(q?.changePct)}`}>
+                        最新 {q?.price ?? "-"}
+                      </div>
                       <div className="book bids">
                         {(detail?.bids || []).map((l, i) => (
                           <div key={i}>
@@ -5296,9 +5473,7 @@ export default function Home() {
                           ? `${x.turnover}%`
                           : "-"}
                       </span>
-                      <span
-                        className={marketTone(x?.mainNetInflow)}
-                      >
+                      <span className={marketTone(x?.mainNetInflow)}>
                         {x ? money(x.mainNetInflow) : "-"}
                       </span>
                       {[
@@ -5307,10 +5482,7 @@ export default function Home() {
                         performance?.rollingMonth,
                         performance?.rollingYear,
                       ].map((value, index) => (
-                        <span
-                          key={index}
-                          className={marketTone(value)}
-                        >
+                        <span key={index} className={marketTone(value)}>
                           {value == null ? "-" : pct(value)}
                         </span>
                       ))}
@@ -5586,8 +5758,11 @@ export default function Home() {
                         <span>
                           <b>{x?.name || "行情暂不可用"}</b>
                           <small>
-                            现价 <em className={marketTone(x?.changePct)}>{x?.price ?? "-"}</em> · 市值 ¥
-                            {money((x?.price || 0) * h.shares)}
+                            现价{" "}
+                            <em className={marketTone(x?.changePct)}>
+                              {x?.price ?? "-"}
+                            </em>{" "}
+                            · 市值 ¥{money((x?.price || 0) * h.shares)}
                           </small>
                         </span>
                         <span className="gain">
@@ -5889,14 +6064,19 @@ export default function Home() {
               <small>当前结构判断</small>
               <h2>{signal}</h2>
               <p>
-                {q?.name || selected} 最新价 <strong className={marketTone(q?.changePct)}>{q?.price ?? "-"}</strong>；20日均线{" "}
-                {Number.isFinite(ma(20)) ? ma(20).toFixed(2) : "-"}，60日均线{" "}
-                {Number.isFinite(ma(60)) ? ma(60).toFixed(2) : "-"}
+                {q?.name || selected} 最新价{" "}
+                <strong className={marketTone(q?.changePct)}>
+                  {q?.price ?? "-"}
+                </strong>
+                ；20日均线 {Number.isFinite(ma(20)) ? ma(20).toFixed(2) : "-"}
+                ，60日均线 {Number.isFinite(ma(60)) ? ma(60).toFixed(2) : "-"}
                 。红色表示偏多，绿色表示偏空，黄色表示中性或数据不足。
               </p>
               <div className="decision-metrics">
                 <div>
-                  <b className={marketTone(q?.changePct)}>{q ? pct(q.changePct) : "-"}</b>
+                  <b className={marketTone(q?.changePct)}>
+                    {q ? pct(q.changePct) : "-"}
+                  </b>
                   <span>当日涨跌</span>
                 </div>
                 <div>
@@ -6010,19 +6190,75 @@ export default function Home() {
             <section className="ai-strategy panel">
               <div className="section-head">
                 <div>
-                  <small>DEEPSEEK AI · 数据约束分析</small>
+                  <small>MULTI-MODEL AI · 数据约束分析</small>
                   <h2>智能策略解读</h2>
                 </div>
-                <button
-                  disabled={aiLoading || !q || bars.length < 20}
-                  onClick={runAiAnalysis}
-                >
-                  {aiLoading
-                    ? "分析中…"
-                    : aiAnalysis
-                      ? "重新生成"
-                      : "生成AI分析"}
-                </button>
+                <div className="ai-model-actions">
+                  <select
+                    value={profile.aiProvider}
+                    onChange={(event) => {
+                      const provider = aiProviders.find(
+                        (item) => item.id === event.target.value,
+                      );
+                      setProfile((item) => ({
+                        ...item,
+                        aiProvider: event.target.value,
+                        aiModel: provider?.models[0]?.id || "",
+                      }));
+                    }}
+                  >
+                    {aiProviders
+                      .filter(
+                        (provider) => aiConfigured[provider.id]?.configured,
+                      )
+                      .map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
+                        </option>
+                      ))}
+                    {!Object.values(aiConfigured).some(
+                      (item) => item.configured,
+                    ) && <option value="">先在个人中心配置 API Key</option>}
+                  </select>
+                  <input
+                    list="ai-model-options"
+                    value={profile.aiModel}
+                    onChange={(event) =>
+                      setProfile((item) => ({
+                        ...item,
+                        aiModel: event.target.value,
+                      }))
+                    }
+                    placeholder="模型 ID"
+                  />
+                  <datalist id="ai-model-options">
+                    {(
+                      aiProviders.find(
+                        (provider) => provider.id === profile.aiProvider,
+                      )?.models || []
+                    ).map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </datalist>
+                  <button
+                    disabled={
+                      aiLoading ||
+                      !q ||
+                      bars.length < 20 ||
+                      !aiConfigured[profile.aiProvider]?.configured ||
+                      !profile.aiModel
+                    }
+                    onClick={runAiAnalysis}
+                  >
+                    {aiLoading
+                      ? "分析中…"
+                      : aiAnalysis
+                        ? "重新生成"
+                        : "生成AI分析"}
+                  </button>
+                </div>
               </div>
               <p className="ai-intro">
                 模型只接收页面当前股票的真实行情、技术统计和公开消息摘要。结果缓存30分钟，点击重新生成才会再次产生API调用费用。
@@ -6030,7 +6266,8 @@ export default function Home() {
               {aiError && <div className="ai-error">{aiError}</div>}
               {!aiAnalysis && !aiError && (
                 <div className="ai-placeholder">
-                  点击“生成AI分析”后，DeepSeek将基于当前数据给出证据、消息影响、情景与风险。未配置密钥时规则证据层仍可正常使用。
+                  先在个人中心配置任一供应商的 API
+                  Key，再选择模型版本生成证据、消息影响、情景与风险。未配置模型时规则证据层仍可正常使用。
                 </div>
               )}
               {aiAnalysis && (
@@ -6108,10 +6345,10 @@ export default function Home() {
             <section className="strategy-method panel">
               <div>
                 <b>双层策略结构</b>
-                <span>规则证据层 + DeepSeek解释层</span>
+                <span>规则证据层 + 可切换大模型解释层</span>
               </div>
               <p>
-                规则层负责可复核的行情、K线、均线、成交量和估值计算；DeepSeek只在你点击生成时读取当前快照，归纳消息、证据、情景和风险。
+                规则层负责可复核的行情、K线、均线、成交量和估值计算；你选择的模型只在点击生成时读取当前快照，归纳消息、证据、情景和风险。
               </p>
               <small>
                 AI输出不回写行情，不替代原始数据，也不构成收益保证或自动交易指令。

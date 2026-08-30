@@ -67,3 +67,25 @@
 .terminal .decision-live.bear h2,.terminal .strategy-tone.bear h2,.terminal .strategy-tone.bear .decision-metrics b{color:var(--fall-color)}
 .terminal .ladder-row button strong{color:var(--rise-color)}
 .terminal .holding small em{font-style:normal;font-weight:700}
+
+/* Per-user AI provider vault and runtime model selection. */
+.profile-panel{width:min(980px,100%)}
+.profile-models{margin:20px 24px 0;padding:17px;border:1px solid #2b4058;border-radius:13px;background:#0a1625}
+.profile-models-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:13px}
+.profile-models-head b{font-size:15px}.profile-models-head p{margin:5px 0 0;color:#8195ad;font-size:11px}
+.profile-models-head>span{flex:0 0 auto;border:1px solid #286b68;border-radius:20px;padding:5px 9px;color:#65d4ca;font-size:10px}
+.profile-model-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.profile-model-list article{min-width:0;border:1px solid #293d55;border-radius:10px;padding:13px;background:#0d1b2c}
+.profile-model-list article>header{position:static;height:auto;padding:0;background:transparent;border:0;display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.profile-model-list article>header div{display:grid;gap:4px}.profile-model-list article>header small{color:#71879f;font-size:9px}
+.profile-model-list article>header>span{color:#71859c;font-size:10px}.profile-model-list article>header>span.configured{color:#5ed4c7}
+.profile-model-list article>p{min-height:30px;margin:10px 0;color:#8599b0;font-size:10px;line-height:1.5}
+.profile-key-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px}
+.profile-key-row input{min-width:0;height:36px;border:1px solid #30465e;border-radius:7px;background:#081321;color:#e6eef8;padding:8px}
+.profile-key-row button{border:1px solid #1a9f96;border-radius:7px;background:#0b817a;color:white;padding:7px 10px}
+.profile-key-row button.danger{border-color:#774052;background:#301725;color:#ef829a}.profile-key-row button:disabled{opacity:.45}
+.profile-model-message{margin:12px 0 0;color:#66d5ca;font-size:11px}.profile-model-note{display:block;margin-top:10px;color:#758aa1;line-height:1.6}
+.ai-model-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap}
+.ai-model-actions select,.ai-model-actions input{height:39px;border:1px solid #30455e;border-radius:8px;background:#0b1727;color:#e7eff8;padding:8px 10px}
+.ai-model-actions select{max-width:180px}.ai-model-actions input{width:190px}
+@media(max-width:760px){.profile-model-list{grid-template-columns:1fr}.profile-models-head{display:block}.profile-models-head>span{display:inline-block;margin-top:9px}.profile-key-row{grid-template-columns:minmax(0,1fr) auto}.profile-key-row .danger{grid-column:2}.ai-model-actions{justify-content:flex-start}.ai-model-actions select,.ai-model-actions input{width:100%;max-width:none}}

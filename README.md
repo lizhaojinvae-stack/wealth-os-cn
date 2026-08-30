@@ -1,6 +1,6 @@
 # WEALTH OS
 
-面向中国投资者的本地优先投资工作台，覆盖真实行情、自选分组、持仓管理、交互式K线、规则策略、DeepSeek辅助分析、公开资讯和金融知识课程。
+面向中国投资者的本地优先投资工作台，覆盖真实行情、自选分组、持仓管理、交互式K线、规则策略、多模型AI辅助分析、公开资讯和金融知识课程。
 
 > 本项目用于研究与学习，不构成投资建议，不承诺收益。行情和资讯来自第三方公开接口，生产使用前请自行确认数据许可、稳定性与合规要求。
 
@@ -22,7 +22,8 @@
 - 交易计划：透明评分、突破触发、回踩区间、结构失效、风险收益比与实时状态迁移
 - 模拟炒股：100万元本地模拟账户、真实行情、限价/市价委托、撤单、T+1、持仓盈亏和成交记录
 - 规则证据层：均线、量能、支撑压力、触发与失效条件
-- DeepSeek结构化分析：证据、消息影响、情景、风险和数据缺口
+- OpenAI、Gemini、DeepSeek、Qwen、GLM多模型结构化分析：证据、消息影响、情景、风险和数据缺口
+- 个人中心按供应商加密保存API Key；策略页可切换最近模型版本或填写自定义模型ID
 - 个股公开资讯、原文链接和关键词事件分类
 - 从零基础到高阶的金融知识课程
 
@@ -31,7 +32,8 @@
 ```text
 app/
   api/
-    analyze/route.ts   # DeepSeek服务端代理，密钥不会进入浏览器
+    analyze/route.ts   # 多模型服务端代理，密钥不会进入浏览器
+    model-config/      # 当前用户的模型供应商密钥配置
     market/route.ts    # 行情、K线、搜索、盘口、资讯和区间表现
     auth/route.ts      # 注册、登录、退出和会话查询
     user-data/route.ts # 当前用户数据读取与保存
@@ -81,18 +83,21 @@ npx wrangler d1 create wealth-os-cn
 npx wrangler d1 migrations apply wealth-os-cn --remote
 ```
 
-## DeepSeek 配置
+## AI 模型与 API Key 配置
 
 编辑项目根目录的 `.env.local`：
 
 ```env
-DEEPSEEK_API_KEY=你的新密钥
-DEEPSEEK_MODEL=deepseek-v4-pro
+AI_KEYS_ENCRYPTION_KEY=请填写至少32位稳定随机字符串
 ```
 
-以后更换密钥只需修改这一处并重启服务。不要把真实密钥写入源代码、`.env.example`、README、提交记录或前端变量。`.env.local` 已被 `.gitignore` 排除。
+重启服务并登录后，进入“个人中心 → AI 模型与 API Key”，可分别维护 OpenAI、Gemini、DeepSeek、阿里云百炼/Qwen 和智谱GLM的 Key。Key 按供应商保存，一把 Key 可供该供应商的多个模型版本使用；实际分析时在策略页选择版本，也可直接填写供应商支持的自定义模型ID。
 
-DeepSeek只在策略室点击“生成AI分析”时调用。结果在当前浏览器缓存30分钟；普通行情约5秒刷新不会触发模型请求。若不配置密钥，行情、自选、持仓、K线、新闻、学习和规则证据层仍可使用。
+API Key 使用 `AI_KEYS_ENCRYPTION_KEY` 派生的 AES-GCM 密钥加密后存入D1；浏览器重新读取时只会得到掩码，不会取得明文。该加密主密钥必须保持稳定，修改后旧 Key 将无法解密。不要把真实密钥写入源代码、`.env.example`、README、提交记录或任何 `NEXT_PUBLIC_` 变量。`.env.local` 已被 `.gitignore` 排除。
+
+兼容旧部署：如仍配置 `DEEPSEEK_API_KEY`，DeepSeek 会显示为“环境变量已配置”，但更推荐在个人中心按用户维护。部署到 Cloudflare 时将 `AI_KEYS_ENCRYPTION_KEY` 设置为 Secret，而不是普通前端变量。
+
+模型只在策略室点击“生成AI分析”时调用。结果在当前浏览器缓存30分钟；普通行情刷新不会触发模型请求。若不配置任何模型，行情、自选、持仓、K线、新闻、学习和规则证据层仍可使用。
 
 部署时请在平台的 Secrets/Environment Variables 设置同名变量，不要上传 `.env.local`。
 
@@ -115,18 +120,18 @@ APK输出位置：`android/app/build/outputs/apk/debug/app-debug.apk`。当前�
 
 ## 数据口径
 
-| 数据 | 主要来源 | 更新策略 |
-| --- | --- | --- |
-| 行情、市值、估值、换手、资金流 | 东方财富 push2 | 页面约5秒轮询 |
-| K线 | 东方财富 push2his，腾讯证券备用 | 本地缓存优先，后台更新 |
-| 证券搜索 | 东方财富证券搜索，腾讯备用 | 输入防抖查询 |
-| 五档盘口 | 东方财富 push2 | 约5秒轮询 |
-| 新闻 | 东方财富公开资讯检索 | 切换股票立即请求，约5分钟更新 |
-| AI分析 | DeepSeek Chat Completions | 用户主动生成，缓存30分钟 |
-| 市场雷达 | 东方财富板块行情、涨停池 | 页面约60秒更新，休市时显示最近交易日 |
-| 指标筛选 | 东方财富沪深京A股行情列表 | 点击运行时重新分段扫描全部市场；结果在本次扫描快照内排序分页 |
-| 交易计划 | 东方财富实时行情、东方财富/腾讯前复权日线 | 约30秒重新确认，自选与持仓最多20只 |
-| 模拟交易 | 东方财富 push2 实时行情 | 行情约5秒刷新；账户、委托与成交保存在本地浏览器 |
+| 数据                           | 主要来源                                           | 更新策略                                                     |
+| ------------------------------ | -------------------------------------------------- | ------------------------------------------------------------ |
+| 行情、市值、估值、换手、资金流 | 东方财富 push2                                     | 页面约5秒轮询                                                |
+| K线                            | 东方财富 push2his，腾讯证券备用                    | 本地缓存优先，后台更新                                       |
+| 证券搜索                       | 东方财富证券搜索，腾讯备用                         | 输入防抖查询                                                 |
+| 五档盘口                       | 东方财富 push2                                     | 约5秒轮询                                                    |
+| 新闻                           | 东方财富公开资讯检索                               | 切换股票立即请求，约5分钟更新                                |
+| AI分析                         | 用户选择的 OpenAI / Gemini / DeepSeek / Qwen / GLM | 用户主动生成，缓存30分钟                                     |
+| 市场雷达                       | 东方财富板块行情、涨停池                           | 页面约60秒更新，休市时显示最近交易日                         |
+| 指标筛选                       | 东方财富沪深京A股行情列表                          | 点击运行时重新分段扫描全部市场；结果在本次扫描快照内排序分页 |
+| 交易计划                       | 东方财富实时行情、东方财富/腾讯前复权日线          | 约30秒重新确认，自选与持仓最多20只                           |
+| 模拟交易                       | 东方财富 push2 实时行情                            | 行情约5秒刷新；账户、委托与成交保存在本地浏览器              |
 
 第三方免费接口可能限流、调整字段或暂时不可用。系统在缺少数据时显示暂无或数据不足，不生成假行情。
 
@@ -138,7 +143,7 @@ APK输出位置：`android/app/build/outputs/apk/debug/app-debug.apk`。当前�
 
 ## AI分析边界
 
-DeepSeek收到当前股票的数据快照，包括行情、估值、前复权K线统计、规则信号和公开新闻摘要。系统要求模型：只依据输入数据；区分事实、计算与推断；新闻不足时标记待核验；输出证据、风险、数据缺口和条件情景；禁止收益承诺。
+所选模型收到当前股票的数据快照，包括行情、估值、前复权K线统计、规则信号和公开新闻摘要。系统要求模型：只依据输入数据；区分事实、计算与推断；新闻不足时标记待核验；输出证据、风险、数据缺口和条件情景；禁止收益承诺。
 
 规则证据层独立存在以便复核。AI结果不会修改行情、自动下单或回写策略参数。
 
@@ -162,12 +167,12 @@ npm run lint
 
 ## GitHub 与部署
 
-提交前用 `git status` 和 `git diff --cached` 确认 `.env.local` 没有进入提交。部署到 Cloudflare/Sites 或其他平台时配置 `DEEPSEEK_API_KEY` 与可选的 `DEEPSEEK_MODEL` 环境变量。
+提交前用 `git status` 和 `git diff --cached` 确认 `.env.local` 没有进入提交。部署到 Cloudflare/Sites 或其他平台时必须配置稳定的 `AI_KEYS_ENCRYPTION_KEY` 服务端 Secret；`DEEPSEEK_API_KEY` 仅作为旧版可选兼容项。
 
 ## 安全提醒
 
 - 已粘贴到聊天、工单或公开位置的密钥应立即轮换。
-- 不要创建 `NEXT_PUBLIC_DEEPSEEK_API_KEY`，否则密钥会进入浏览器。
+- 不要创建任何 `NEXT_PUBLIC_*_API_KEY`，否则密钥会进入浏览器。
 - 公开部署建议增加身份验证、速率限制和用量预算。
 - 对外服务前应审查第三方行情与资讯接口的使用条款。
 
@@ -175,4 +180,8 @@ npm run lint
 
 - [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion)
 - [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode)
+- [OpenAI Models API](https://developers.openai.com/api/reference/resources/models)
+- [Gemini Models](https://ai.google.dev/gemini-api/docs/models)
+- [阿里云百炼模型列表](https://help.aliyun.com/zh/model-studio/model-list-text-generation/)
+- [智谱GLM模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)
 - [vinext](https://github.com/cloudflare/vinext)
